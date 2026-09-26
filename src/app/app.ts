@@ -1,4 +1,4 @@
-import { pickAdapter, type DocView } from "../adapters";
+import { pickAdapter, type DocView, type PageImage } from "../adapters";
 import {
   clearLegacyRoot,
   deleteVault,
@@ -18,11 +18,15 @@ import { SidecarStore } from "../store/sidecar";
 import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
 import { hasChromeStorage } from "../store/kv";
 import {
+  buildOutlineTree,
   DEFAULT_RULES,
   PAGE_OWNER,
+  assignOwners,
   parseLabel,
   smallestContainingSegment,
   type Marker,
+  type OutlineNode,
+  type Region,
   type Segment,
   type SegmentRole,
   type Span
@@ -36,6 +40,7 @@ import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { Outline } from "../ui/outline";
 import { Palette } from "../ui/palette";
+import { Player } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
 import { Toolbar } from "../ui/toolbar";
@@ -45,12 +50,22 @@ import "../ui/styles.css";
 
 const SCROLL_PREFIX = "ihobs:scroll:";
 
+function findNode(nodes: OutlineNode[], id: string): OutlineNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const hit = findNode(n.children, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 interface Shell {
   root: HTMLElement;
   explorer: HTMLElement;
   viewer: HTMLElement;
   outline: HTMLElement;
   palette: HTMLElement;
+  player: HTMLElement;
 }
 
 function buildShell(mount: HTMLElement): Shell {
@@ -77,11 +92,14 @@ function buildShell(mount: HTMLElement): Shell {
   const palette = document.createElement("div");
   palette.className = "palette-root hidden";
 
+  const player = document.createElement("div");
+  player.className = "player-root hidden";
+
   workspace.append(explorer, viewer, outline);
-  shell.append(toolbar, workspace, palette);
+  shell.append(toolbar, workspace, palette, player);
   mount.appendChild(shell);
 
-  return { root: shell, explorer, viewer, outline, palette };
+  return { root: shell, explorer, viewer, outline, palette, player };
 }
 
 export class App {
@@ -92,6 +110,7 @@ export class App {
   private hub!: VaultHub;
   private palette!: Palette;
   private outline!: Outline;
+  private player!: Player;
 
   private vaults: VaultRecord[] = [];
   private vault: VaultRecord | null = null;
@@ -109,6 +128,7 @@ export class App {
   private drawTool: DrawTool | null = null;
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
+  private inspect = false;
   private currentPath: string | null = null;
   private scrollMemo = new Map<string, number>();
   private readonly onScroll: () => void;
@@ -193,8 +213,18 @@ export class App {
       onAutoSegment: () => void this.runSegmentation(),
       onSplitApply: () => void this.applySplit(),
       onSplitCancel: () => this.setDrawTool(null),
+      onPlay: (id) => void this.openPlayer(id),
       onClear: () => void this.clearAll()
     });
+
+    this.player = new Player(
+      this.shell.player,
+      {
+        loadPage: (page, scale) => this.loadPageImage(page, scale),
+        marksFor: (segmentId) => this.marksForSegment(segmentId)
+      },
+      { onClose: () => undefined }
+    );
 
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
       onOpenHub: () => this.showHub(),
@@ -219,7 +249,8 @@ export class App {
       onZoomIn: () => this.nudgeZoom(1.15),
       onZoomOut: () => this.nudgeZoom(1 / 1.15),
       onZoomReset: () => this.setZoom(1),
-      onGoToPage: (page) => this.view?.goToPage?.(page)
+      onGoToPage: (page) => this.view?.goToPage?.(page),
+      onToggleInspect: () => this.toggleInspect()
     });
   }
 
@@ -501,9 +532,11 @@ export class App {
     const overlay = new Overlay(view.surfaces, model.regions, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openRegionMenu(id, x, y),
-      ownerFor: (geom) => this.resolveOwner(geom)
+      ownerFor: (geom) => this.resolveOwner(geom),
+      ownerLabel: (owner) => this.ownerLabel(owner)
     });
     overlay.setMode(this.mode);
+    overlay.setInspect(this.inspect);
     this.overlay = overlay;
 
     this.segments = model.segments;
@@ -548,8 +581,21 @@ export class App {
   }
 
   private refreshOutline(): void {
+    // Counts must be set before render so the badges are drawn in one pass.
+    this.outline.setInspect(this.inspect, this.inspect ? this.inspectCounts() : new Map());
     this.outline.render(this.segments, this.markers);
     this.outline.setActive(this.activeId);
+  }
+
+  // Per-segment count of marks the player would resolve to it, so inspect mode
+  // reveals questions whose occlusions are owned by a container or the page.
+  private inspectCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const seg of this.segments) {
+      if (seg.role !== "question") continue;
+      counts.set(seg.id, this.marksForSegment(seg.id).length);
+    }
+    return counts;
   }
 
   private updateOutlineVisibility(): void {
@@ -626,10 +672,11 @@ export class App {
     // Attach to the selected segment, or detach back to page scope.
     if (ownerSeg) {
       items.push({
-        label: "Detach from segment",
+        label: `Detach from ${this.ownerLabel(region.owner)}`,
         onSelect: () => {
           this.overlay?.setOwner(id, PAGE_OWNER);
           void this.persist();
+          this.refreshOutline();
         }
       });
     } else if (this.activeKind === "segment" && this.activeId) {
@@ -640,9 +687,23 @@ export class App {
           onSelect: () => {
             this.overlay?.setOwner(id, target.id);
             void this.persist();
+            this.refreshOutline();
           }
         });
       }
+    }
+    // Snap to the smallest containing segment, fixing container/page owners.
+    const container = smallestContainingSegment(region, this.segments);
+    if (container && container.id !== region.owner) {
+      items.push({
+        label: `Snap to containing ${this.ownerLabel(container.id)}`,
+        hint: "fix attachment",
+        onSelect: () => {
+          this.overlay?.setOwner(id, container.id);
+          void this.persist();
+          this.refreshOutline();
+        }
+      });
     }
     items.push({
       label: "Remove",
@@ -734,6 +795,8 @@ export class App {
     const at = this.segments.indexOf(container);
     this.segments.splice(at + 1, 0, ...children);
     this.setDrawTool(null);
+    // Re-home marks now that finer-grained questions exist to contain them.
+    this.reassignMarkOwners();
     this.segLayer?.setData(this.segments, this.markers);
     this.segLayer?.setVisible(true);
     this.selectEntry(children[0].id, "segment");
@@ -827,6 +890,107 @@ export class App {
     await this.store.saveSegments(this.currentPath, this.view.kind, this.segments, this.markers);
   }
 
+  private async loadPageImage(page: number, scale: number): Promise<PageImage | null> {
+    if (!this.view?.getPageImages) return null;
+    const images = await this.view.getPageImages([page], scale);
+    return images[0] ?? null;
+  }
+
+  // Re-homes mark owners against the current segments (after split/auto-segment).
+  private reassignMarkOwners(): void {
+    if (!this.overlay) return;
+    assignOwners(this.overlay.getRegions(), this.segments, true);
+    this.overlay.repaint();
+  }
+
+  private toggleInspect(): void {
+    this.inspect = !this.inspect;
+    this.toolbar.setInspect(this.inspect);
+    this.overlay?.setInspect(this.inspect);
+    this.refreshOutline();
+  }
+
+  // Human-readable owner label for inspect mode badges and menus.
+  private ownerLabel(owner: string): string {
+    if (owner === PAGE_OWNER) return "page";
+    const seg = this.segments.find((s) => s.id === owner);
+    if (!seg) return "orphan";
+    const text = seg.label.replace(/^#+\s*/, "").trim() || seg.role;
+    return `${text} (${seg.role})`;
+  }
+
+  // Marks shown for a question in play mode: those attached to it, plus any
+  // mark that geometrically sits inside its box but is not attached to a
+  // different question (covers free and container-owned marks).
+  private marksForSegment(segmentId: string): Region[] {
+    const regions = this.overlay?.getRegions() ?? [];
+    const seg = this.segments.find((s) => s.id === segmentId);
+    const span = seg?.spans[0];
+    return regions.filter((r) => {
+      if (r.owner === segmentId) return true;
+      if (!span || r.surface !== span.page) return false;
+      const inside =
+        r.x >= span.x - 1e-6 &&
+        r.y >= span.y - 1e-6 &&
+        r.x + r.w <= span.x + span.w + 1e-6 &&
+        r.y + r.h <= span.y + span.h + 1e-6;
+      if (!inside) return false;
+      // Another question that also contains it is the truer owner.
+      if (r.owner !== PAGE_OWNER) {
+        const owner = this.segments.find((s) => s.id === r.owner);
+        if (owner?.role === "question") return false;
+      }
+      return true;
+    });
+  }
+
+  // Opens a one-question-at-a-time player. Scope: the selected questions
+  // container's descendants, or a single selected question, or all questions.
+  private openPlayer(id: string): void {
+    if (!this.view?.getPageImages) {
+      window.alert("Play mode supports PDFs.");
+      return;
+    }
+    const tree = buildOutlineTree(this.segments, this.markers);
+    const collect = (nodes: OutlineNode[], acc: Segment[]): void => {
+      for (const n of nodes) {
+        const seg = n.kind === "segment" ? this.segments.find((s) => s.id === n.id) : undefined;
+        if (seg && seg.role === "question") acc.push(seg);
+        collect(n.children, acc);
+      }
+    };
+
+    let scope: Segment[] = [];
+    const picked = this.segments.find((s) => s.id === id);
+    if (picked?.role === "questions") {
+      const node = findNode(tree, id);
+      collect(node ? node.children : [], scope);
+    } else if (picked?.role === "question") {
+      scope = [picked];
+    } else {
+      scope = this.segments.filter((s) => s.role === "question");
+    }
+
+    scope.sort((a, b) => {
+      const pa = a.spans[0]?.page ?? 0;
+      const pb = b.spans[0]?.page ?? 0;
+      return pa - pb || (a.spans[0]?.y ?? 0) - (b.spans[0]?.y ?? 0);
+    });
+
+    if (!scope.length) {
+      window.alert("No questions to play. Split a questions container first.");
+      return;
+    }
+
+    this.player.start(
+      scope.map((s) => ({
+        id: s.id,
+        label: s.label.replace(/^#+\s*/, "") || "question",
+        span: s.spans[0] ?? null
+      }))
+    );
+  }
+
   // Auto-segmentation always runs INSIDE a manually drawn "questions" container.
   private async runSegmentation(): Promise<void> {
     if (!this.view || !this.store || !this.currentPath) return;
@@ -868,6 +1032,7 @@ export class App {
         return;
       }
       this.segments.splice(startIndex + 1, 0, ...found);
+      this.reassignMarkOwners();
       this.segLayer?.setData(this.segments, this.markers);
       this.segLayer?.setVisible(true);
       this.refreshOutline();
@@ -890,6 +1055,7 @@ export class App {
   }
 
   private teardown(): void {
+    if (this.player.isOpen()) this.player.close();
     this.overlay?.destroy();
     this.overlay = null;
     this.segDrawer?.destroy();

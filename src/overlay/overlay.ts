@@ -9,6 +9,8 @@ export interface OverlayOptions {
   // Resolves the owner for a freshly drawn mark. Explicit selection wins;
   // otherwise the caller falls back to containment, then page.
   ownerFor(geom: { surface: number; x: number; y: number; w: number; h: number }): string;
+  // Resolves a human label for a mark's owner, used by inspect mode.
+  ownerLabel?(owner: string): string;
 }
 
 function uid(): string {
@@ -21,6 +23,7 @@ export class Overlay {
   private readonly layers = new Map<number, HTMLElement>();
   private regions: Region[];
   private mode: OverlayMode = "none";
+  private inspect = false;
   private drawing: { surface: number; startX: number; startY: number; ghost: HTMLElement } | null = null;
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
@@ -204,6 +207,11 @@ export class Overlay {
     this.paint();
   }
 
+  setInspect(inspect: boolean): void {
+    this.inspect = inspect;
+    this.paint();
+  }
+
   repaint(): void {
     this.paint();
   }
@@ -220,7 +228,7 @@ export class Overlay {
       const attached = r.owner && r.owner !== PAGE_OWNER;
       el.className = `ihobs-region ${r.kind}${r.revealed ? " revealed" : ""}${
         attached ? " attached" : ""
-      }`;
+      }${this.inspect ? " inspect" : ""}`;
       el.dataset.owner = r.owner;
       el.style.left = `${r.x * w}px`;
       el.style.top = `${r.y * h}px`;
@@ -228,6 +236,12 @@ export class Overlay {
       el.style.height = `${r.h * h}px`;
       el.style.background = r.kind === "occlusion" ? r.color : "transparent";
       el.title = "click to reveal · right-click for options";
+      if (this.inspect) {
+        const badge = document.createElement("span");
+        badge.className = "ihobs-region-owner";
+        badge.textContent = this.options.ownerLabel?.(r.owner) ?? r.owner;
+        el.appendChild(badge);
+      }
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
         if (e.altKey) {

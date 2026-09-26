@@ -13,12 +13,14 @@ export interface ToolbarHandlers {
   onZoomOut(): void;
   onZoomReset(): void;
   onGoToPage(page: number): void;
+  onToggleInspect(): void;
 }
 
 export class Toolbar {
   private readonly root: HTMLElement;
   private readonly h: ToolbarHandlers;
   private mode: OverlayMode = "none";
+  private inspect = false;
 
   constructor(root: HTMLElement, h: ToolbarHandlers) {
     this.root = root;
@@ -79,6 +81,7 @@ export class Toolbar {
 
     const occlude = this.button("occlude", () => this.setMode("occlude"));
     const highlight = this.button("highlight", () => this.setMode("highlight"));
+    const inspect = this.button("inspect", () => this.toggleInspect());
     const reveal = this.button("reveal", () => this.h.onToggleReveal());
     const hideAll = this.button("hide", () => this.h.onRevealAll(false));
     const save = this.button("save", () => this.h.onSave());
@@ -94,11 +97,24 @@ export class Toolbar {
       spacer,
       occlude,
       highlight,
+      inspect,
       reveal,
       hideAll,
       save,
       theme
     );
+  }
+
+  toggleInspect(): void {
+    this.inspect = !this.inspect;
+    const btn = this.root.querySelector<HTMLElement>('[data-action="inspect"]');
+    btn?.classList.toggle("active", this.inspect);
+    this.h.onToggleInspect();
+  }
+
+  setInspect(on: boolean): void {
+    this.inspect = on;
+    this.root.querySelector<HTMLElement>('[data-action="inspect"]')?.classList.toggle("active", on);
   }
 
   private pageInput(): HTMLInputElement {

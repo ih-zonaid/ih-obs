@@ -342,15 +342,34 @@ export function smallestContainingSegment(geom: MarkGeom, segments: Segment[]): 
   return best;
 }
 
-// One-time containment pass: free marks that clearly sit inside a segment are
-// promoted to be owned by it. Explicit owners are always preserved.
-export function adoptOrphanMarks(regions: Region[], segments: Segment[]): Region[] {
+// Assigns owners by containment.
+//   rehome=false (load): keep valid explicit owners; only free/dangling marks
+//     adopt the smallest containing segment, so loading never rewrites intent.
+//   rehome=true (after split/auto-segment): also move a mark owned by a coarser
+//     segment down to the inner segment that contains it, so occlusions drawn
+//     over a questions container end up owned by the specific question.
+export function assignOwners(regions: Region[], segments: Segment[], rehome = false): Region[] {
   const ids = new Set(segments.map((s) => s.id));
   for (const r of regions) {
-    if (r.owner && r.owner !== PAGE_OWNER && ids.has(r.owner)) continue;
-    r.owner = PAGE_OWNER;
     const best = smallestContainingSegment(r, segments);
-    if (best) r.owner = best.id;
+    const explicit = r.owner !== PAGE_OWNER && ids.has(r.owner);
+    if (!best) {
+      if (r.owner !== PAGE_OWNER && !explicit) r.owner = PAGE_OWNER;
+      continue;
+    }
+    if (!explicit) {
+      r.owner = best.id;
+      continue;
+    }
+    if (!rehome) continue;
+    const current = segments.find((s) => s.id === r.owner);
+    if (!current) {
+      r.owner = best.id;
+      continue;
+    }
+    const curArea = current.spans[0] ? current.spans[0].w * current.spans[0].h : Infinity;
+    const bestArea = best.spans[0] ? best.spans[0].w * best.spans[0].h : Infinity;
+    if (bestArea < curArea) r.owner = best.id;
   }
   return regions;
 }
@@ -384,7 +403,7 @@ export function migrate(raw: unknown, doc: string, kind: Sidecar["kind"]): Sidec
   const v = data.version;
   if (v !== 1 && v !== 2 && v !== 3 && v !== 4) return emptySidecar(doc, kind);
   const segments = migrateSegments(data.segments);
-  const regions = adoptOrphanMarks(migrateRegions(data.regions), segments);
+  const regions = assignOwners(migrateRegions(data.regions), segments);
   return {
     version: 4,
     doc: data.doc ?? doc,

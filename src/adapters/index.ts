@@ -14,4 +14,4 @@ export function registerAdapter(adapter: DocAdapter): void {
   ADAPTERS.unshift(adapter);
 }
 
-export type { DocAdapter, DocView, Surface, LoadContext, DocKind } from "./types";
+export type { DocAdapter, DocView, Surface, LoadContext, DocKind, PageImage } from "./types";

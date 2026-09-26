@@ -9,6 +9,7 @@ export interface OutlineHandlers {
   onAutoSegment(): void;
   onSplitApply(): void;
   onSplitCancel(): void;
+  onPlay(id: string): void;
   onClear(): void;
 }
 
@@ -24,11 +25,20 @@ export class Outline {
   private markers: Marker[] = [];
   private collapsed = new Set<string>();
   private readonly rows = new Map<string, HTMLElement>();
+  private counts = new Map<string, number>();
+  private showCounts = false;
 
   constructor(root: HTMLElement, handlers: OutlineHandlers) {
     this.root = root;
     this.root.className = "outline";
     this.handlers = handlers;
+  }
+
+  // Inspect mode overlays a per-entry mark count so under-attached entries stand
+  // out (a question showing 0 while it has occlusions means a bad owner).
+  setInspect(show: boolean, counts: Map<string, number>): void {
+    this.showCounts = show;
+    this.counts = counts;
   }
 
   render(segments: Segment[], markers: Marker[]): void {
@@ -104,6 +114,9 @@ export class Outline {
     const actions = document.createElement("div");
     actions.className = "outline-actions";
     actions.append(
+      this.btn("play", "play questions one at a time", () =>
+        this.handlers.onPlay(this.active ?? "")
+      ),
       this.btn("auto", "auto-segment the selected questions container", () =>
         this.handlers.onAutoSegment()
       ),
@@ -190,6 +203,15 @@ export class Outline {
     });
     row.appendChild(name);
 
+    if (this.showCounts && node.kind === "segment") {
+      const n = this.counts.get(node.id) ?? 0;
+      const badge = document.createElement("span");
+      badge.className = "outline-count" + (n === 0 ? " none" : "");
+      badge.textContent = `●${n}`;
+      badge.title = `${n} mark(s) resolved to this segment`;
+      row.appendChild(badge);
+    }
+
     const page = document.createElement("span");
     page.className = "outline-page";
     page.textContent = `p${node.page + 1}`;
@@ -204,6 +226,18 @@ export class Outline {
       this.handlers.onDelete(node.id, node.kind);
     });
     row.appendChild(del);
+
+    if (node.role === "questions" || node.role === "question") {
+      const play = document.createElement("span");
+      play.className = "outline-play";
+      play.textContent = "▶";
+      play.title = node.role === "questions" ? "play questions inside" : "play this question";
+      play.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.handlers.onPlay(node.id);
+      });
+      row.insertBefore(play, del);
+    }
 
     row.addEventListener("click", () => this.handlers.onSelect(node.id, node.kind));
     this.rows.set(node.id, row);
