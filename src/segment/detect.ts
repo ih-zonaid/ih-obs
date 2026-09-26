@@ -1,5 +1,6 @@
-import type { Segment, SegmentRule, Span } from "../store/schema";
+import type { Segment, SegmentRole, SegmentRule, Span } from "../store/schema";
 import {
+  cropBitmap,
   lineBands,
   mergeCloseBands,
   otsuThreshold,
@@ -188,20 +189,58 @@ export interface SegmentedPage {
   spans: Span[];
 }
 
+export interface ScopedSegment {
+  page: number;
+  span: Span;
+  role: SegmentRole;
+  label: string;
+}
+
 export function buildSegments(pages: SegmentedPage[], prefix: string): Segment[] {
   const segments: Segment[] = [];
-  let order = 0;
   for (const pg of pages) {
     for (const span of pg.spans) {
       segments.push({
         id: uid(),
-        type: "question",
-        title: `${prefix}${order + 1}`,
-        order,
+        role: "question",
+        label: `${prefix}${segments.length + 1}`,
         spans: [span]
       });
-      order++;
     }
   }
   return segments;
+}
+
+// Runs a rule inside a manually-selected region (normalized within its page),
+// clipping detection to that box so results stay scoped to the container.
+export function detectInSpan(
+  page: PageBitmap,
+  region: Span,
+  rule: SegmentRule,
+  role: SegmentRole,
+  prefix: string,
+  level = 0
+): Segment[] {
+  const bmp = page.bitmap;
+  const sx = region.x * bmp.width;
+  const sy = region.y * bmp.height;
+  const sw = region.w * bmp.width;
+  const sh = region.h * bmp.height;
+  const crop = cropBitmap(bmp, sx, sy, sw, sh);
+  const spans = detectLayout({ page: page.page, bitmap: crop }, rule);
+  const head = level > 0 ? `${"#".repeat(Math.min(6, level))} ` : "";
+  return spans.map((s, i) => ({
+    id: uid(),
+    role,
+    label: `${head}${prefix}${i + 1}`,
+    spans: [
+      {
+        page: page.page,
+        x: region.x + s.x * region.w,
+        y: region.y + s.y * region.h,
+        w: s.w * region.w,
+        h: s.h * region.h
+      }
+    ]
+  }));
 }

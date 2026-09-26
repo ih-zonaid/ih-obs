@@ -152,6 +152,17 @@ export class Toolbar {
 
   setMode(mode: OverlayMode): void {
     this.mode = mode === this.mode ? "none" : mode;
+    this.syncMode();
+    this.h.onMode(this.mode);
+  }
+
+  clearMode(): void {
+    if (this.mode === "none") return;
+    this.mode = "none";
+    this.syncMode();
+  }
+
+  private syncMode(): void {
     this.root.querySelectorAll(".tb-btn").forEach((el) => {
       const btn = el as HTMLButtonElement;
       const action = btn.dataset.action;
@@ -159,7 +170,6 @@ export class Toolbar {
         btn.classList.toggle("active", action === this.mode);
       }
     });
-    this.h.onMode(this.mode);
   }
 
   setTitle(text: string): void {

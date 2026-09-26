@@ -17,15 +17,26 @@ import { Overlay, type OverlayMode } from "../overlay/overlay";
 import { SidecarStore } from "../store/sidecar";
 import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
 import { hasChromeStorage } from "../store/kv";
-import { DEFAULT_RULES, type Segment, type SegmentRule } from "../store/schema";
-import { detectLayout } from "../segment/detect";
+import {
+  DEFAULT_RULES,
+  PAGE_OWNER,
+  parseLabel,
+  smallestContainingSegment,
+  type Marker,
+  type Segment,
+  type SegmentRole,
+  type Span
+} from "../store/schema";
+import { detectInSpan } from "../segment/detect";
 import { toBitmap } from "../segment/layout";
 import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
+import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { Outline } from "../ui/outline";
 import { Palette } from "../ui/palette";
+import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
@@ -90,8 +101,12 @@ export class App {
   private view: DocView | null = null;
   private overlay: Overlay | null = null;
   private segLayer: SegmentLayer | null = null;
+  private segDrawer: SegmentDrawer | null = null;
   private segments: Segment[] = [];
-  private activeSegment: string | null = null;
+  private markers: Marker[] = [];
+  private activeId: string | null = null;
+  private activeKind: "segment" | "marker" = "segment";
+  private drawTool: DrawTool | null = null;
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
   private currentPath: string | null = null;
@@ -171,11 +186,14 @@ export class App {
     });
 
     this.outline = new Outline(this.shell.outline, {
-      onSelect: (id) => this.selectSegment(id),
-      onRename: (id, title) => void this.renameSegment(id, title),
-      onDelete: (id) => void this.deleteSegment(id),
-      onDetect: () => void this.runSegmentation(),
-      onClear: () => void this.clearSegments()
+      onSelect: (id, kind) => this.selectEntry(id, kind),
+      onLabel: (id, kind, label) => void this.setLabel(id, kind, label),
+      onDelete: (id, kind) => void this.deleteEntry(id, kind),
+      onTool: (tool) => this.setDrawTool(tool),
+      onAutoSegment: () => void this.runSegmentation(),
+      onSplitApply: () => void this.applySplit(),
+      onSplitCancel: () => this.setDrawTool(null),
+      onClear: () => void this.clearAll()
     });
 
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
@@ -186,6 +204,8 @@ export class App {
       onMode: (mode) => {
         this.mode = mode;
         this.overlay?.setMode(mode);
+        if (mode !== "none" && this.drawTool) this.setDrawTool(null);
+        this.syncInteractivity();
       },
       onRevealAll: (revealed) => {
         this.overlay?.revealAll(revealed);
@@ -479,25 +499,57 @@ export class App {
     if (view.kind === "json") return;
     const model = await this.store.load(this.currentPath, view.kind);
     const overlay = new Overlay(view.surfaces, model.regions, {
-      onChange: () => void this.persist()
+      onChange: () => void this.persist(),
+      onContext: (id, x, y) => this.openRegionMenu(id, x, y),
+      ownerFor: (geom) => this.resolveOwner(geom)
     });
     overlay.setMode(this.mode);
     this.overlay = overlay;
 
     this.segments = model.segments;
-    this.activeSegment = null;
+    this.markers = model.markers;
+    this.activeId = null;
+    this.activeKind = "segment";
+    this.drawTool = null;
     this.segLayer = new SegmentLayer(view.surfaces, {
-      onSelect: (id) => this.selectSegment(id),
-      getActive: () => this.activeSegment
+      onSelect: (id, kind) => this.selectEntry(id, kind),
+      onContext: (id, kind, x, y) => this.openEntryMenu(id, kind, x, y),
+      getActive: () => this.activeId
     });
-    this.segLayer.setSegments(this.segments);
+    this.segLayer.setData(this.segments, this.markers);
+    this.segLayer.setVisible(this.segments.length > 0 || this.markers.length > 0);
+    this.segDrawer = new SegmentDrawer(view.surfaces, {
+      onDraw: (span) => void this.addSegmentFromDraw(span),
+      onMarker: (page, y) => void this.addMarker(page, y)
+    });
+    this.syncInteractivity();
     this.refreshOutline();
     this.updateOutlineVisibility();
   }
 
+  // Explicit selection wins; otherwise the smallest containing segment owns the
+  // mark; otherwise it is a free page-level mark.
+  private resolveOwner(geom: { surface: number; x: number; y: number; w: number; h: number }): string {
+    if (this.activeKind === "segment" && this.activeId) {
+      const seg = this.segments.find((s) => s.id === this.activeId);
+      if (seg) return seg.id;
+    }
+    const contained = smallestContainingSegment(geom, this.segments);
+    return contained ? contained.id : PAGE_OWNER;
+  }
+
+  // Tool-owns-pointer: while a mark tool is active segments go click-through;
+  // while a segment tool is active the mark overlay goes click-through.
+  private syncInteractivity(): void {
+    const markTool = this.mode !== "none";
+    const segTool = !!this.drawTool;
+    this.overlay?.setInteractive(!segTool);
+    this.segLayer?.setInteractive(!markTool);
+  }
+
   private refreshOutline(): void {
-    this.outline.render(this.segments);
-    this.outline.setActive(this.activeSegment);
+    this.outline.render(this.segments, this.markers);
+    this.outline.setActive(this.activeId);
   }
 
   private updateOutlineVisibility(): void {
@@ -507,77 +559,326 @@ export class App {
     ws?.classList.toggle("has-outline", show);
   }
 
-  private selectSegment(id: string): void {
-    this.activeSegment = id;
-    this.segLayer?.setVisible(true);
+  private selectEntry(id: string, kind: "segment" | "marker"): void {
+    this.activeId = id;
+    this.activeKind = kind;
+    if (kind === "segment") this.segLayer?.setVisible(true);
+    // Update classes in place; a full re-render here would destroy the row that
+    // the user just clicked and swallow the double-click.
     this.outline.setActive(id);
     this.segLayer?.scrollTo(id);
+    if (this.drawTool === "split") {
+      const container = this.selectedContainer();
+      if (container) this.armSplit(container);
+      else this.segDrawer?.resetSplit();
+    }
   }
 
-  private async renameSegment(id: string, title: string): Promise<void> {
-    const seg = this.segments.find((s) => s.id === id);
-    if (!seg) return;
-    seg.title = title;
+  // Right-click menus are spec-driven: add future actions as new entries here.
+  private openEntryMenu(id: string, kind: "segment" | "marker", clientX: number, clientY: number): void {
+    const entry =
+      kind === "marker"
+        ? this.markers.find((m) => m.id === id)
+        : this.segments.find((s) => s.id === id);
+    if (!entry) return;
+    this.selectEntry(id, kind);
+
+    const items: ContextMenuEntry[] = [];
+    if (kind === "segment") {
+      const seg = entry as Segment;
+      if (seg.role === "questions") {
+        items.push({
+          label: "Auto-segment inside",
+          hint: "find questions",
+          onSelect: () => void this.runSegmentation()
+        });
+      }
+      items.push({ label: "Rename label", onSelect: () => this.outline.beginEditActive() });
+    } else {
+      items.push({ label: "Rename label", onSelect: () => this.outline.beginEditActive() });
+    }
+    items.push("separator");
+    items.push({
+      label: kind === "marker" ? "Delete marker" : "Delete segment",
+      danger: true,
+      onSelect: () => void this.deleteEntry(id, kind)
+    });
+
+    openContextMenu({ title: this.entryTitle(kind, entry), items }, clientX, clientY);
+  }
+
+  private openRegionMenu(id: string, clientX: number, clientY: number): void {
+    const region = this.overlay?.getRegions().find((r) => r.id === id);
+    if (!region) return;
+    const kindLabel = region.kind === "highlight" ? "Highlight" : "Occlusion";
+    const ownerSeg =
+      region.owner !== PAGE_OWNER ? this.segments.find((s) => s.id === region.owner) : undefined;
+    const ownerName = ownerSeg ? ownerSeg.label.replace(/^#+\s*/, "") || "segment" : "page";
+    const items: ContextMenuEntry[] = [
+      {
+        label: region.revealed ? "Hide" : "Reveal",
+        onSelect: () => {
+          this.overlay?.reveal(id, !region.revealed);
+          void this.persist();
+        }
+      }
+    ];
+    // Attach to the selected segment, or detach back to page scope.
+    if (ownerSeg) {
+      items.push({
+        label: "Detach from segment",
+        onSelect: () => {
+          this.overlay?.setOwner(id, PAGE_OWNER);
+          void this.persist();
+        }
+      });
+    } else if (this.activeKind === "segment" && this.activeId) {
+      const target = this.segments.find((s) => s.id === this.activeId);
+      if (target) {
+        items.push({
+          label: `Attach to "${target.label.replace(/^#+\s*/, "") || "segment"}"`,
+          onSelect: () => {
+            this.overlay?.setOwner(id, target.id);
+            void this.persist();
+          }
+        });
+      }
+    }
+    items.push({
+      label: "Remove",
+      danger: true,
+      onSelect: () => {
+        this.overlay?.remove(id);
+        void this.persist();
+      }
+    });
+    openContextMenu({ title: `${kindLabel} · ${ownerName}`, items }, clientX, clientY);
+  }
+
+  private entryTitle(kind: "segment" | "marker", entry: Segment | Marker): string {
+    const label = entry.label.trim() || (kind === "marker" ? "marker" : "segment");
+    const page = kind === "marker" ? (entry as Marker).page : (entry as Segment).spans[0]?.page ?? 0;
+    return `${label} · p${page + 1}`;
+  }
+
+  private setDrawTool(tool: DrawTool | null): void {
+    const container = tool === "split" ? this.selectedContainer() : null;
+    if (tool === "split" && !container) {
+      window.alert("Select a 'questions' container first, then split it.");
+      tool = null;
+    }
+    this.drawTool = tool;
+    this.segDrawer?.setTool(tool);
+    if (tool === "split" && container) this.armSplit(container);
+    else this.segDrawer?.resetSplit();
+    if (tool && this.mode !== "none") {
+      this.mode = "none";
+      this.overlay?.setMode("none");
+      this.toolbar.clearMode();
+    }
+    // setTool updates internal state; refresh so the split action bar appears
+    // or disappears with the tool.
+    this.outline.setTool(tool);
+    this.syncInteractivity();
+    this.refreshOutline();
+  }
+
+  private selectedContainer(): Segment | null {
+    if (this.activeKind !== "segment" || !this.activeId) return null;
+    const seg = this.segments.find((s) => s.id === this.activeId);
+    return seg && seg.role === "questions" ? seg : null;
+  }
+
+  private armSplit(container: Segment): void {
+    const span = container.spans[0];
+    if (!span) return;
+    this.segDrawer?.startSplit(span.page, { x: span.x, y: span.y, w: span.w, h: span.h });
+  }
+
+  // Slices the selected questions container at the user's cut lines into child
+  // 'question' segments, one per band, right after the container in the outline.
+  private async applySplit(): Promise<void> {
+    const container = this.selectedContainer();
+    const cuts = this.segDrawer?.getCuts() ?? [];
+    if (!container) {
+      window.alert("Select a 'questions' container first.");
+      return;
+    }
+    if (!cuts.length) {
+      window.alert("Click at least one boundary line on the page.");
+      return;
+    }
+    const span = container.spans[0];
+    if (!span) return;
+
+    const pageCuts = cuts.filter((c) => c.page === span.page).map((c) => c.y).sort((a, b) => a - b);
+    const bounds = [span.y, ...pageCuts, span.y + span.h];
+    const baseText = parseLabel(container.label).text || "Q";
+    const children: Segment[] = [];
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const top = bounds[i];
+      const bottom = bounds[i + 1];
+      if (bottom - top < 0.004) continue;
+      children.push({
+        id: `s_${Math.random().toString(36).slice(2, 9)}`,
+        role: "question",
+        label: `${baseText} ${i + 1}`,
+        spans: [{ page: span.page, x: span.x, y: top, w: span.w, h: bottom - top }]
+      });
+    }
+    if (!children.length) {
+      window.alert("Cuts produced no sections.");
+      return;
+    }
+
+    const at = this.segments.indexOf(container);
+    this.segments.splice(at + 1, 0, ...children);
+    this.setDrawTool(null);
+    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setVisible(true);
+    this.selectEntry(children[0].id, "segment");
+    await this.persistSegments();
+  }
+
+  private defaultLabel(role: SegmentRole): string {
+    const n = this.segments.filter((s) => s.role === role).length + 1;
+    if (role === "concept") return `Concept ${n}`;
+    if (role === "questions") return `Questions ${n}`;
+    if (role === "question") return `Q${n}`;
+    return `Item ${n}`;
+  }
+
+  private async addSegmentFromDraw(span: Span): Promise<void> {
+    const role: SegmentRole =
+      this.drawTool === "concept" || this.drawTool === "questions" || this.drawTool === "question"
+        ? this.drawTool
+        : "concept";
+    const seg: Segment = {
+      id: `s_${Math.random().toString(36).slice(2, 9)}`,
+      role,
+      label: this.defaultLabel(role),
+      spans: [span]
+    };
+    this.segments.push(seg);
+    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setVisible(true);
+    this.selectEntry(seg.id, "segment");
+    this.outline.beginEditActive();
+    await this.persistSegments();
+  }
+
+  private async addMarker(page: number, y: number): Promise<void> {
+    const n = this.markers.filter((m) => m.page === page).length + 1;
+    const marker: Marker = {
+      id: `m_${Math.random().toString(36).slice(2, 9)}`,
+      page,
+      y,
+      label: `Marker ${n}`
+    };
+    this.markers.push(marker);
+    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setVisible(true);
+    this.selectEntry(marker.id, "marker");
+    this.outline.beginEditActive();
+    await this.persistSegments();
+  }
+
+  private async setLabel(id: string, kind: "segment" | "marker", label: string): Promise<void> {
+    if (kind === "marker") {
+      const m = this.markers.find((x) => x.id === id);
+      if (!m) return;
+      m.label = label;
+    } else {
+      const s = this.segments.find((x) => x.id === id);
+      if (!s) return;
+      s.label = label;
+    }
+    this.segLayer?.setData(this.segments, this.markers);
     this.refreshOutline();
     await this.persistSegments();
   }
 
-  private async deleteSegment(id: string): Promise<void> {
-    this.segments = this.segments.filter((s) => s.id !== id);
-    this.segments.forEach((s, i) => (s.order = i));
-    if (this.activeSegment === id) this.activeSegment = null;
-    this.segLayer?.setSegments(this.segments);
+  private async deleteEntry(id: string, kind: "segment" | "marker"): Promise<void> {
+    if (kind === "marker") this.markers = this.markers.filter((m) => m.id !== id);
+    else this.segments = this.segments.filter((s) => s.id !== id);
+    if (this.activeId === id) this.activeId = null;
+    // Marks that were attached to the deleted segment (or nested under it) fall
+    // back to page scope rather than disappearing or dangling.
+    this.overlay?.reassignOwners(new Set(this.segments.map((s) => s.id)));
+    void this.persist();
+    this.segLayer?.setData(this.segments, this.markers);
     this.refreshOutline();
     await this.persistSegments();
   }
 
-  private async clearSegments(): Promise<void> {
+  private async clearAll(): Promise<void> {
+    const total = this.segments.length + this.markers.length;
+    if (total && !window.confirm("Clear all segments and markers in this document?")) return;
     this.segments = [];
-    this.activeSegment = null;
-    this.segLayer?.setSegments([]);
+    this.markers = [];
+    this.activeId = null;
+    this.segLayer?.setData([], []);
     this.refreshOutline();
     await this.persistSegments();
   }
 
   private async persistSegments(): Promise<void> {
     if (!this.store || !this.view || !this.currentPath) return;
-    await this.store.saveSegments(this.currentPath, this.view.kind, this.segments);
+    await this.store.saveSegments(this.currentPath, this.view.kind, this.segments, this.markers);
   }
 
+  // Auto-segmentation always runs INSIDE a manually drawn "questions" container.
   private async runSegmentation(): Promise<void> {
     if (!this.view || !this.store || !this.currentPath) return;
     if (this.view.kind !== "pdf" || !this.view.getPageImages) {
       window.alert("Auto-segment currently supports PDFs.");
       return;
     }
-    const rule: SegmentRule = DEFAULT_RULES[0];
-    this.outline.render(this.segments);
-    this.shell.outline.classList.remove("hidden");
+    const container =
+      this.activeKind === "segment"
+        ? this.segments.find((s) => s.id === this.activeId && s.role === "questions")
+        : undefined;
+    if (!container) {
+      window.alert("Select a 'questions' container, then auto-segment.");
+      return;
+    }
+    if (!container.spans.length) return;
 
+    const rule = DEFAULT_RULES[0];
+    const baseText = parseLabel(container.label).text || "Q";
+    const startIndex = this.segments.indexOf(container);
     try {
-      const pages = this.view.surfaces.map((s) => s.index);
-      const images = await this.view.getPageImages(pages, 1.2);
       const found: Segment[] = [];
-      let order = 0;
-      for (const img of images) {
+      for (const region of container.spans) {
+        const images = await this.view.getPageImages([region.page], 1.2);
+        const img = images[0];
+        if (!img) continue;
         const bitmap = toBitmap(img.image);
-        const spans = detectLayout({ page: img.page, bitmap }, rule);
-        for (const span of spans) {
-          found.push({
-            id: `s_${order}_${Math.random().toString(36).slice(2, 7)}`,
-            type: "question",
-            title: `Q${order + 1}`,
-            order,
-            spans: [span]
-          });
-          order++;
-        }
+        const part = detectInSpan(
+          { page: img.page, bitmap },
+          region,
+          rule,
+          "question",
+          `${baseText} `
+        );
+        found.push(...part);
       }
-      this.segments = found;
-      this.segLayer?.setSegments(found);
+      if (!found.length) {
+        window.alert("No questions detected inside this container. Split it manually.");
+        return;
+      }
+      this.segments.splice(startIndex + 1, 0, ...found);
+      this.segLayer?.setData(this.segments, this.markers);
       this.segLayer?.setVisible(true);
       this.refreshOutline();
-      await this.store.saveSegments(this.currentPath, this.view.kind, found, rule);
+      this.selectEntry(found[0].id, "segment");
+      await this.store.saveSegments(
+        this.currentPath,
+        this.view.kind,
+        this.segments,
+        this.markers,
+        rule
+      );
     } catch {
       window.alert("Segmentation failed.");
     }
@@ -591,10 +892,14 @@ export class App {
   private teardown(): void {
     this.overlay?.destroy();
     this.overlay = null;
+    this.segDrawer?.destroy();
+    this.segDrawer = null;
     this.segLayer?.destroy();
     this.segLayer = null;
     this.segments = [];
-    this.activeSegment = null;
+    this.markers = [];
+    this.activeId = null;
+    this.drawTool = null;
     this.shell.outline.classList.add("hidden");
     this.shell.root.querySelector(".workspace")?.classList.remove("has-outline");
     this.zoomCtl?.destroy();

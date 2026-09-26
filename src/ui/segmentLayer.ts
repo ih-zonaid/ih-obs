@@ -1,8 +1,9 @@
-import type { Segment } from "../store/schema";
+import type { Marker, Segment } from "../store/schema";
 import type { Surface } from "../adapters/types";
 
 export interface SegmentLayerOptions {
-  onSelect(id: string): void;
+  onSelect(id: string, kind: "segment" | "marker"): void;
+  onContext(id: string, kind: "segment" | "marker", x: number, y: number): void;
   getActive(): string | null;
 }
 
@@ -11,6 +12,7 @@ export class SegmentLayer {
   private readonly options: SegmentLayerOptions;
   private readonly layers = new Map<number, HTMLElement>();
   private segments: Segment[] = [];
+  private markers: Marker[] = [];
   private visible = false;
 
   constructor(surfaces: Surface[], options: SegmentLayerOptions) {
@@ -30,8 +32,9 @@ export class SegmentLayer {
     }
   }
 
-  setSegments(segments: Segment[]): void {
+  setData(segments: Segment[], markers: Marker[]): void {
     this.segments = segments;
+    this.markers = markers;
     this.paint();
   }
 
@@ -43,16 +46,29 @@ export class SegmentLayer {
     if (visible) this.paint();
   }
 
+  // While a mark tool is active, drop pointer events on the whole layer (and
+  // its boxes) so the overlay can draw through segments, including a question.
+  setInteractive(interactive: boolean): void {
+    for (const layer of this.layers.values()) {
+      layer.classList.toggle("click-through", !interactive);
+    }
+  }
+
   isVisible(): boolean {
     return this.visible;
   }
 
   scrollTo(id: string): void {
     const seg = this.segments.find((s) => s.id === id);
-    if (!seg || !seg.spans.length) return;
-    const span = seg.spans[0];
-    const el = this.layers.get(span.page)?.querySelector<HTMLElement>(`[data-seg="${id}"]`);
-    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (seg?.spans.length) {
+      const el = this.layers.get(seg.spans[0].page)?.querySelector<HTMLElement>(`[data-seg="${id}"]`);
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    const marker = this.markers.find((m) => m.id === id);
+    if (!marker) return;
+    const el = this.layers.get(marker.page)?.querySelector<HTMLElement>(`[data-marker="${id}"]`);
+    el?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
   private size(index: number): { w: number; h: number } {
@@ -67,17 +83,18 @@ export class SegmentLayer {
 
   private paint(): void {
     for (const layer of this.layers.values()) {
-      layer.querySelectorAll(".seg-box").forEach((n) => n.remove());
+      layer.querySelectorAll(".seg-box, .seg-marker").forEach((n) => n.remove());
     }
     if (!this.visible) return;
     const active = this.options.getActive();
+
     for (const seg of this.segments) {
       for (const span of seg.spans) {
         const layer = this.layers.get(span.page);
         if (!layer) continue;
         const { w, h } = this.size(span.page);
         const box = document.createElement("div");
-        box.className = "seg-box" + (seg.id === active ? " active" : "");
+        box.className = `seg-box role-${seg.role}` + (seg.id === active ? " active" : "");
         box.dataset.seg = seg.id;
         box.style.left = `${span.x * w}px`;
         box.style.top = `${span.y * h}px`;
@@ -85,14 +102,43 @@ export class SegmentLayer {
         box.style.height = `${span.h * h}px`;
         const tag = document.createElement("span");
         tag.className = "seg-tag";
-        tag.textContent = seg.title;
+        tag.textContent = seg.label.trim() || seg.role;
         box.appendChild(tag);
         box.addEventListener("click", (e) => {
           e.stopPropagation();
-          this.options.onSelect(seg.id);
+          this.options.onSelect(seg.id, "segment");
+        });
+        box.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.options.onContext(seg.id, "segment", e.clientX, e.clientY);
         });
         layer.appendChild(box);
       }
+    }
+
+    for (const marker of this.markers) {
+      const layer = this.layers.get(marker.page);
+      if (!layer) continue;
+      const { h } = this.size(marker.page);
+      const line = document.createElement("div");
+      line.className = "seg-marker" + (marker.id === active ? " active" : "");
+      line.dataset.marker = marker.id;
+      line.style.top = `${marker.y * h}px`;
+      const tag = document.createElement("span");
+      tag.className = "seg-marker-tag";
+      tag.textContent = marker.label.trim() || "marker";
+      line.appendChild(tag);
+      line.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.options.onSelect(marker.id, "marker");
+      });
+      line.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.options.onContext(marker.id, "marker", e.clientX, e.clientY);
+      });
+      layer.appendChild(line);
     }
   }
 

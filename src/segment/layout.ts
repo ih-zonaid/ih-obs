@@ -21,6 +21,21 @@ export function toBitmap(image: ImageData): Bitmap {
   return { width, height, gray };
 }
 
+export function cropBitmap(bmp: Bitmap, sx: number, sy: number, sw: number, sh: number): Bitmap {
+  const x0 = Math.max(0, Math.floor(sx));
+  const y0 = Math.max(0, Math.floor(sy));
+  const x1 = Math.min(bmp.width, Math.ceil(sx + sw));
+  const y1 = Math.min(bmp.height, Math.ceil(sy + sh));
+  const width = Math.max(1, x1 - x0);
+  const height = Math.max(1, y1 - y0);
+  const gray = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y++) {
+    const src = (y0 + y) * bmp.width + x0;
+    gray.set(bmp.gray.subarray(src, src + width), y * width);
+  }
+  return { width, height, gray };
+}
+
 export function otsuThreshold(bmp: Bitmap): number {
   const hist = new Array<number>(256).fill(0);
   for (let i = 0; i < bmp.gray.length; i++) hist[bmp.gray[i]]++;

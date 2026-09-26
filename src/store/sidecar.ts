@@ -2,6 +2,7 @@ import { ensureDirPath, readText, writeText } from "../vault/fs";
 import {
   emptySidecar,
   migrate,
+  type Marker,
   type Region,
   type Segment,
   type SegmentRule,
@@ -52,14 +53,15 @@ export class SidecarStore {
     docPath: string,
     kind: Sidecar["kind"],
     segments: Segment[],
+    markers: Marker[],
     rule?: SegmentRule
   ): Promise<Sidecar> {
     const current = await this.load(docPath, kind);
-    return this.write(docPath, { ...current, segments, rule: rule ?? current.rule });
+    return this.write(docPath, { ...current, segments, markers, rule: rule ?? current.rule });
   }
 
   private async write(docPath: string, model: Omit<Sidecar, "version" | "updatedAt">): Promise<Sidecar> {
-    const next: Sidecar = { ...model, version: 2, updatedAt: Date.now() };
+    const next: Sidecar = { ...model, version: 4, updatedAt: Date.now() };
     const dir = await this.dir();
     await writeText(dir, sidecarName(docPath), JSON.stringify(next, null, 2));
     this.cache.set(docPath, next);

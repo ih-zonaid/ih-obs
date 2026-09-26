@@ -230,16 +230,20 @@ body {
 }
 .pdf-page.is-rendered .pdf-placeholder { display: none; }
 
+/* Marks sit above segment boxes so a small annotation wins the click in idle. */
 .ihobs-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 2;
+  z-index: 4;
 }
 .ihobs-overlay.is-drawing {
   pointer-events: auto;
   cursor: crosshair;
 }
+/* Tool-owns-pointer: transparent to gestures while another tool is active. */
+.ihobs-overlay.click-through,
+.ihobs-overlay.click-through .ihobs-region { pointer-events: none; }
 
 .ihobs-region {
   position: absolute;
@@ -255,6 +259,8 @@ body {
 }
 .ihobs-region.occlusion { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
 .ihobs-region.occlusion.revealed { opacity: 0; }
+/* Marks attached to a segment get a dashed outline so ownership is visible. */
+.ihobs-region.attached { outline: 1.5px dashed rgba(122, 162, 247, 0.75); outline-offset: 1px; }
 .ihobs-region.highlight {
   background: rgba(245, 197, 24, 0.28) !important;
   mix-blend-mode: multiply;
@@ -396,37 +402,162 @@ body {
   padding: 2px 10px 10px;
   border-bottom: 1px solid var(--border);
 }
+.outline-titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .outline-title {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--fg-dim);
 }
-.outline-actions { display: flex; gap: 6px; }
+.outline-fold { flex: 0 0 auto; }
+.outline-fold .outline-btn { padding: 2px 6px; font-size: 11px; }
+.outline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.outline-splitbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 0 0;
+}
+.outline-splitnote { font-size: 11px; color: var(--hl); flex: 1; min-width: 120px; }
+.outline-btn[data-action="apply"] { background: var(--hl); color: #0b0d10; border-color: var(--hl); }
 .outline-hint { padding: 12px 10px; color: var(--fg-dim); font-size: 12px; }
 .outline-list { display: flex; flex-direction: column; }
 .outline-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 3px 10px 3px 4px;
   font-size: 12.5px;
   color: var(--fg-dim);
   cursor: pointer;
+  border-left: 2px solid transparent;
 }
 .outline-row:hover { background: var(--bg-3); color: var(--fg); }
-.outline-row.active { background: var(--bg-3); color: var(--accent); }
-.outline-n {
+.outline-row.marker { border-left-color: #bb9af7; }
+.outline-row.marker .outline-mark { color: #bb9af7; }
+.outline-row[data-role="concept"] .outline-name { color: #9ece6a; }
+.outline-row[data-role="questions"] .outline-name { color: #ff9e64; font-weight: 600; }
+.outline-row[data-role="question"] .outline-name { color: var(--fg); }
+
+/* Indent guides + collapse chevron. */
+.outline-gutter { flex: 0 0 auto; display: flex; align-items: stretch; align-self: stretch; }
+.outline-guide {
+  width: 14px;
+  border-left: 1px solid var(--border);
+}
+.outline-chevron {
+  width: 14px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+  opacity: 0.8;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.outline-chevron:hover { color: var(--fg); background: var(--bg); opacity: 1; }
+.outline-chevron.empty { cursor: default; opacity: 0.5; }
+.outline-chevron.empty:hover { color: var(--fg-dim); background: none; }
+
+.outline-page {
   flex: 0 0 auto;
-  min-width: 18px;
+  font-size: 10.5px;
   color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
+/* Active must win over marker/level rules, so it sits last. */
+.outline-row.active {
+  background: var(--bg-3);
+  border-left-color: var(--accent);
+}
+.outline-row.active .outline-name { color: var(--accent); font-weight: 700; opacity: 1; }
+.outline-row.active .outline-mark { color: var(--accent); }
+.outline-row.marker.active .outline-mark { color: var(--accent); }
+.outline-mark {
+  flex: 0 0 auto;
+  min-width: 14px;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: -1px;
+  color: var(--fg-dim);
+}
 .outline-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.outline-page { flex: 0 0 auto; font-size: 10.5px; color: var(--fg-dim); }
+.outline-name.untitled { color: var(--fg-dim); font-style: italic; }
+.outline-edit {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 400;
+  padding: 1px 6px;
+  outline: none;
+}
 .outline-del { flex: 0 0 auto; padding: 0 4px; opacity: 0; }
-.outline-row:hover .outline-del { opacity: 0.7; }
+.outline-row:hover .outline-del,
+.outline-row.active .outline-del { opacity: 0.7; }
 .outline-del:hover { color: var(--hl); opacity: 1; }
+.outline-btn.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+.outline-btn[data-tool="concept"].active { background: #9ece6a; border-color: #9ece6a; }
+.outline-btn[data-tool="questions"].active { background: #ff9e64; border-color: #ff9e64; }
+.outline-btn[data-tool="marker"].active { background: #bb9af7; border-color: #bb9af7; }
+
+.seg-draw-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.seg-draw-layer.is-drawing { pointer-events: auto; cursor: crosshair; }
+.seg-draw-layer.is-marker { cursor: ns-resize; }
+.seg-draw-layer.is-split { pointer-events: auto; cursor: crosshair; }
+.split-hover {
+  position: absolute;
+  height: 0;
+  border-top: 1.5px dashed rgba(122, 162, 247, 0.7);
+  pointer-events: none;
+}
+.split-cut {
+  position: absolute;
+  height: 0;
+  border-top: 2px solid var(--hl);
+  pointer-events: none;
+}
+.split-cut::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hl);
+}
+.seg-draw-ghost {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  background: rgba(122, 162, 247, 0.14);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.seg-box.role-concept { border-color: rgba(158, 206, 106, 0.85); background: rgba(158, 206, 106, 0.08); }
+.seg-box.role-concept:hover { background: rgba(158, 206, 106, 0.16); }
+.seg-box.role-concept .seg-tag { background: #9ece6a; }
+.seg-box.role-questions { border-color: rgba(255, 158, 100, 0.9); background: rgba(255, 158, 100, 0.08); }
+.seg-box.role-questions:hover { background: rgba(255, 158, 100, 0.18); }
+.seg-box.role-questions .seg-tag { background: #ff9e64; }
+.seg-box.role-other { border-color: rgba(187, 154, 247, 0.85); background: rgba(187, 154, 247, 0.08); }
+.seg-box.role-other .seg-tag { background: #bb9af7; }
+.seg-box.active { border-color: var(--hl) !important; background: rgba(245, 197, 24, 0.14) !important; }
+.seg-box.active .seg-tag { background: var(--hl); }
 
 .seg-layer {
   position: absolute;
@@ -434,6 +565,11 @@ body {
   pointer-events: none;
   z-index: 3;
 }
+/* Tool-owns-pointer: while a mark tool is active, segments go click-through so
+   occlusions can be drawn anywhere, including inside a question box. */
+.seg-layer.click-through,
+.seg-layer.click-through .seg-box,
+.seg-layer.click-through .seg-marker { pointer-events: none !important; }
 .seg-box {
   position: absolute;
   border: 1.5px solid rgba(122, 162, 247, 0.85);
@@ -444,6 +580,40 @@ body {
 }
 .seg-box:hover { background: rgba(122, 162, 247, 0.16); }
 .seg-box.active { border-color: var(--hl); background: rgba(245, 197, 24, 0.14); }
+.seg-marker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1.5px solid rgba(187, 154, 247, 0.9);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.seg-marker::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #bb9af7;
+}
+.seg-marker.active { border-top-color: var(--hl); }
+.seg-marker.active::before { background: var(--hl); }
+.seg-marker-tag {
+  position: absolute;
+  top: -8px;
+  left: 10px;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 5px;
+  background: #bb9af7;
+  color: #0b0d10;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.seg-marker.active .seg-marker-tag { background: var(--hl); }
 .seg-tag {
   position: absolute;
   top: -17px;
@@ -457,6 +627,50 @@ body {
   white-space: nowrap;
 }
 .seg-box.active .seg-tag { background: var(--hl); }
+
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+}
+.ctx-title {
+  padding: 5px 9px 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 6px 9px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-item:hover:not(:disabled) { background: var(--accent); color: #0b0d10; }
+.ctx-item:disabled { color: var(--fg-dim); opacity: 0.5; cursor: default; }
+.ctx-item.danger { color: #f7768e; }
+.ctx-item.danger:hover:not(:disabled) { background: #f7768e; color: #0b0d10; }
+.ctx-hint { font-size: 10.5px; color: var(--fg-dim); }
+.ctx-item:hover:not(:disabled) .ctx-hint { color: rgba(0, 0, 0, 0.55); }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
 .json-view {
   max-width: 900px;

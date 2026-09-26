@@ -1,10 +1,14 @@
-import type { Region } from "../store/schema";
+import { PAGE_OWNER, type Region } from "../store/schema";
 import type { Surface } from "../adapters/types";
 
 export type OverlayMode = "none" | "occlude" | "highlight";
 
 export interface OverlayOptions {
   onChange(regions: Region[]): void;
+  onContext?(id: string, x: number, y: number): void;
+  // Resolves the owner for a freshly drawn mark. Explicit selection wins;
+  // otherwise the caller falls back to containment, then page.
+  ownerFor(geom: { surface: number; x: number; y: number; w: number; h: number }): string;
 }
 
 function uid(): string {
@@ -51,6 +55,18 @@ export class Overlay {
     for (const layer of this.layers.values()) {
       layer.classList.toggle("is-drawing", mode !== "none");
     }
+  }
+
+  // While another tool owns the pointer, the whole overlay becomes transparent
+  // to gestures so it cannot intercept a segment draw underneath it.
+  setInteractive(interactive: boolean): void {
+    for (const layer of this.layers.values()) {
+      layer.classList.toggle("click-through", !interactive);
+    }
+  }
+
+  isDrawing(): boolean {
+    return this.mode !== "none";
   }
 
   getRegions(): Region[] {
@@ -127,6 +143,14 @@ export class Overlay {
       w: width / w,
       h: height / h,
       color: this.mode === "highlight" ? "#f5c518" : "#1f2430",
+      owner:
+        this.options.ownerFor({
+          surface: d.surface,
+          x: left / w,
+          y: top / h,
+          w: width / w,
+          h: height / h
+        }) || PAGE_OWNER,
       revealed: false
     });
     this.paint();
@@ -143,6 +167,23 @@ export class Overlay {
 
   revealAll(revealed: boolean): void {
     for (const r of this.regions) r.revealed = revealed;
+    this.paint();
+    this.options.onChange(this.regions);
+  }
+
+  // Detach marks whose owner segment no longer exists, so free marks survive
+  // but orphaned attachments fall back to the page.
+  reassignOwners(validIds: Set<string>): void {
+    for (const r of this.regions) {
+      if (r.owner !== PAGE_OWNER && !validIds.has(r.owner)) r.owner = PAGE_OWNER;
+    }
+    this.paint();
+  }
+
+  setOwner(id: string, owner: string): void {
+    const r = this.regions.find((x) => x.id === id);
+    if (!r) return;
+    r.owner = owner;
     this.paint();
     this.options.onChange(this.regions);
   }
@@ -176,13 +217,17 @@ export class Overlay {
       if (!layer) continue;
       const { w, h } = this.surfaceSize(r.surface);
       const el = document.createElement("div");
-      el.className = `ihobs-region ${r.kind}${r.revealed ? " revealed" : ""}`;
+      const attached = r.owner && r.owner !== PAGE_OWNER;
+      el.className = `ihobs-region ${r.kind}${r.revealed ? " revealed" : ""}${
+        attached ? " attached" : ""
+      }`;
+      el.dataset.owner = r.owner;
       el.style.left = `${r.x * w}px`;
       el.style.top = `${r.y * h}px`;
       el.style.width = `${r.w * w}px`;
       el.style.height = `${r.h * h}px`;
       el.style.background = r.kind === "occlusion" ? r.color : "transparent";
-      el.title = "click to reveal · alt+click to remove";
+      el.title = "click to reveal · right-click for options";
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
         if (e.altKey) {
@@ -190,6 +235,11 @@ export class Overlay {
         } else {
           this.reveal(r.id, !r.revealed);
         }
+      });
+      el.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.options.onContext?.(r.id, e.clientX, e.clientY);
       });
       layer.appendChild(el);
     }
