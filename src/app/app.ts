@@ -1,21 +1,32 @@
 import { pickAdapter, type DocView } from "../adapters";
-import { ensureReadWrite, loadRoot, pickRoot } from "../host/idb";
+import {
+  clearLegacyRoot,
+  deleteVault,
+  getCurrentVaultId,
+  getLegacyRoot,
+  listVaults,
+  newId,
+  pickDirectory,
+  putVault,
+  queryPermission,
+  requestReadWrite,
+  setCurrentVaultId,
+  type VaultRecord
+} from "../host/idb";
 import { Overlay, type OverlayMode } from "../overlay/overlay";
 import { SidecarStore } from "../store/sidecar";
-import { PrefsStore, type Prefs } from "../store/prefs";
+import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
+import { hasChromeStorage } from "../store/kv";
 import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { Toolbar } from "../ui/toolbar";
+import { VaultHub } from "../ui/vaultHub";
 import { ZoomController } from "../ui/zoom";
 import "../ui/styles.css";
 
-const SCROLL_KEY = "ihobs:scroll";
-
-function hasStorage(): boolean {
-  return typeof chrome !== "undefined" && !!chrome.storage?.local;
-}
+const SCROLL_PREFIX = "ihobs:scroll:";
 
 interface Shell {
   root: HTMLElement;
@@ -53,9 +64,13 @@ export class App {
   private toolbar!: Toolbar;
   private explorer!: Explorer;
   private home!: Home;
-  private prefs = new PrefsStore();
-  private vault: FileSystemDirectoryHandle | null = null;
+  private hub!: VaultHub;
+
+  private vaults: VaultRecord[] = [];
+  private vault: VaultRecord | null = null;
   private store: SidecarStore | null = null;
+  private prefs = new PrefsStore();
+
   private view: DocView | null = null;
   private overlay: Overlay | null = null;
   private zoomCtl: ZoomController | null = null;
@@ -73,29 +88,44 @@ export class App {
   }
 
   private async boot(): Promise<void> {
-    const prefs = await this.prefs.load();
-    this.applyTheme(prefs.theme);
+    const theme = await loadTheme();
+    this.applyTheme(theme);
     this.wire();
-    this.toolbar.setThemeIcon(prefs.theme);
-    this.explorer.setState(prefs.expanded, prefs.pinned);
-    await this.loadScroll();
+    this.toolbar.setThemeIcon(theme);
 
-    const handle = await loadRoot();
-    if (!handle) {
-      this.showHome();
+    await this.migrateLegacy();
+    this.vaults = await listVaults();
+
+    if (!this.vaults.length) {
+      this.showHub();
       return;
     }
-    this.vault = handle;
-    this.store = new SidecarStore(handle);
-    await this.refreshTree();
 
-    if (prefs.lastOpened) {
-      const ok = await this.nodeHandle(prefs.lastOpened);
-      if (ok) await this.openPath(prefs.lastOpened);
-      else this.showHome();
+    const currentId = await getCurrentVaultId();
+    const target = this.vaults.find((v) => v.id === currentId) ?? this.vaults[0];
+    const perm = await queryPermission(target.handle);
+    if (perm === "granted") {
+      await this.activate(target, true);
     } else {
-      this.showHome();
+      this.showHub();
     }
+  }
+
+  private async migrateLegacy(): Promise<void> {
+    const existing = await listVaults();
+    if (existing.length) return;
+    const legacy = await getLegacyRoot();
+    if (!legacy) return;
+    const rec: VaultRecord = {
+      id: newId(),
+      label: legacy.name || "vault",
+      handle: legacy,
+      addedAt: Date.now(),
+      lastOpenedAt: Date.now()
+    };
+    await putVault(rec);
+    await setCurrentVaultId(rec.id);
+    await clearLegacyRoot();
   }
 
   private wire(): void {
@@ -110,8 +140,15 @@ export class App {
       onTogglePin: (path) => void this.togglePin(path)
     });
 
+    this.hub = new VaultHub(this.shell.viewer, {
+      onOpen: (id) => void this.openVault(id),
+      onAdd: () => void this.addVault(),
+      onRename: (id) => void this.renameVault(id),
+      onForget: (id) => void this.forgetVault(id)
+    });
+
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
-      onPickVault: () => void this.pick(),
+      onOpenHub: () => this.showHub(),
       onHome: () => this.showHome(),
       onToggleTheme: () => void this.toggleTheme(),
       onMode: (mode) => {
@@ -130,19 +167,127 @@ export class App {
     });
   }
 
-  private applyTheme(theme: Prefs["theme"]): void {
+  private applyTheme(theme: "dark" | "light"): void {
     this.shell.root.dataset.theme = theme;
     document.documentElement.dataset.theme = theme;
   }
 
   private async toggleTheme(): Promise<void> {
-    const next: Prefs["theme"] = this.prefs.get().theme === "dark" ? "light" : "dark";
-    await this.prefs.setTheme(next);
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    await saveTheme(next);
     this.applyTheme(next);
     this.toolbar.setThemeIcon(next);
   }
 
+  private async showHub(): Promise<void> {
+    this.teardown();
+    this.currentPath = null;
+    this.toolbar.setTitle("no document");
+    this.toolbar.setZoom(1);
+    this.toolbar.setVaultLabel(null);
+    this.shell.root.classList.add("vault-collapsed");
+    this.explorer.render({ name: "", path: "", kind: "directory", children: [] });
+    this.vaults = await listVaults();
+    const status = new Map<string, boolean>();
+    for (const v of this.vaults) {
+      status.set(v.id, (await queryPermission(v.handle)) === "granted");
+    }
+    const currentId = this.vault?.id ?? null;
+    this.hub.show(this.vaults, currentId, status);
+  }
+
+  private async openVault(id: string): Promise<void> {
+    const rec = this.vaults.find((v) => v.id === id);
+    if (!rec) return;
+    const ok = await requestReadWrite(rec.handle);
+    if (!ok) {
+      window.alert("Access denied. Grant permission to open this vault.");
+      return;
+    }
+    await this.activate(rec, true);
+  }
+
+  private async addVault(): Promise<void> {
+    try {
+      const handle = await pickDirectory();
+      const ok = await requestReadWrite(handle);
+      if (!ok) return;
+      const rec: VaultRecord = {
+        id: newId(),
+        label: handle.name || "vault",
+        handle,
+        addedAt: Date.now(),
+        lastOpenedAt: Date.now()
+      };
+      await putVault(rec);
+      this.vaults = await listVaults();
+      await this.activate(rec, false);
+    } catch {
+      /* cancelled */
+    }
+  }
+
+  private async renameVault(id: string): Promise<void> {
+    const rec = this.vaults.find((v) => v.id === id);
+    if (!rec) return;
+    const next = window.prompt("Vault name", rec.label);
+    if (!next || next === rec.label) return;
+    await putVault({ ...rec, label: next });
+    this.vaults = await listVaults();
+    if (this.vault?.id === id) {
+      this.vault = { ...rec, label: next };
+      this.toolbar.setVaultLabel(next);
+    }
+    await this.showHub();
+  }
+
+  private async forgetVault(id: string): Promise<void> {
+    const rec = this.vaults.find((v) => v.id === id);
+    if (!rec) return;
+    if (!window.confirm(`Forget "${rec.label}"? Your files and .ihobs data stay untouched.`)) return;
+    this.prefs = new PrefsStore().withVault(id);
+    await this.prefs.clearVaultData();
+    if (hasChromeStorage()) await chrome.storage.local.remove(this.scrollKey(id));
+    await deleteVault(id);
+    if (this.vault?.id === id) {
+      this.vault = null;
+      await setCurrentVaultId(null);
+    }
+    await this.showHub();
+  }
+
+  private async activate(rec: VaultRecord, reopenLast: boolean): Promise<void> {
+    this.teardown();
+    this.vault = rec;
+    this.store = new SidecarStore(rec.handle);
+    this.prefs = new PrefsStore().withVault(rec.id);
+    const prefs = await this.prefs.load();
+    this.toolbar.setVaultLabel(rec.label);
+    this.explorer.setState(prefs.expanded, prefs.pinned);
+    this.shell.root.classList.remove("vault-collapsed");
+
+    await setCurrentVaultId(rec.id);
+    await putVault({ ...rec, lastOpenedAt: Date.now() });
+    this.vaults = await listVaults();
+
+    await this.loadScroll(rec.id);
+    await this.refreshTree();
+
+    if (reopenLast && prefs.lastOpened) {
+      const ok = await this.nodeHandle(prefs.lastOpened);
+      if (ok) {
+        await this.openPath(prefs.lastOpened);
+        return;
+      }
+    }
+    this.showHome();
+  }
+
   private showHome(): void {
+    if (!this.vault) {
+      void this.showHub();
+      return;
+    }
     this.teardown();
     this.currentPath = null;
     this.toolbar.setTitle("no document");
@@ -151,25 +296,12 @@ export class App {
     this.home.show(this.prefs.get());
   }
 
-  private async pick(): Promise<void> {
-    try {
-      const handle = await pickRoot();
-      await ensureReadWrite(handle);
-      this.vault = handle;
-      this.store = new SidecarStore(handle);
-      await this.refreshTree();
-    } catch {
-      /* user cancelled */
-    }
-  }
-
   private async refreshTree(): Promise<void> {
     if (!this.vault) return;
-    const tree = await listTree(this.vault);
+    const tree = await listTree(this.vault.handle);
     const prefs = this.prefs.get();
     this.explorer.setState(prefs.expanded, prefs.pinned);
     this.explorer.render(tree);
-    this.shell.root.classList.remove("vault-collapsed");
   }
 
   private async togglePin(path: string): Promise<void> {
@@ -177,7 +309,7 @@ export class App {
     const prefs = this.prefs.get();
     this.explorer.setState(prefs.expanded, prefs.pinned);
     if (this.vault) {
-      const tree = await listTree(this.vault);
+      const tree = await listTree(this.vault.handle);
       this.explorer.render(tree);
       this.explorer.setActive(this.currentPath);
     }
@@ -186,7 +318,7 @@ export class App {
 
   private async nodeHandle(path: string): Promise<FileSystemFileHandle | null> {
     if (!this.vault) return null;
-    let dir: FileSystemDirectoryHandle = this.vault;
+    let dir: FileSystemDirectoryHandle = this.vault.handle;
     const segs = splitPath(path);
     for (let i = 0; i < segs.length - 1; i++) {
       try {
@@ -219,7 +351,7 @@ export class App {
     this.currentPath = path;
 
     const view = await adapter.load({
-      vault: this.vault,
+      vault: this.vault.handle,
       path,
       handle,
       container: this.shell.viewer
@@ -236,9 +368,8 @@ export class App {
     this.zoomCtl?.destroy();
     this.zoomCtl = null;
     if (!view.setZoom) return;
-    const viewer = this.shell.viewer;
     this.zoomCtl = new ZoomController({
-      viewer,
+      viewer: this.shell.viewer,
       getZoom: () => view.getZoom?.() ?? 1,
       onChange: (z) => {
         const applied = view.setZoom?.(z) ?? z;
@@ -249,22 +380,27 @@ export class App {
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
   }
 
-  private async loadScroll(): Promise<void> {
-    if (!hasStorage()) return;
-    const got = await chrome.storage.local.get(SCROLL_KEY);
-    const map = (got[SCROLL_KEY] as Record<string, number>) ?? {};
+  private scrollKey(vaultId: string): string {
+    return `${SCROLL_PREFIX}${vaultId}`;
+  }
+
+  private async loadScroll(vaultId: string): Promise<void> {
+    this.scrollMemo.clear();
+    if (!hasChromeStorage()) return;
+    const got = await chrome.storage.local.get(this.scrollKey(vaultId));
+    const map = (got[this.scrollKey(vaultId)] as Record<string, number>) ?? {};
     for (const [k, v] of Object.entries(map)) this.scrollMemo.set(k, v);
   }
 
   private memoScroll(): void {
-    if (!this.currentPath) return;
+    if (!this.currentPath || !this.vault) return;
     if (this.scrollTimer !== null) window.clearTimeout(this.scrollTimer);
     const path = this.currentPath;
+    const key = this.scrollKey(this.vault.id);
     this.scrollTimer = window.setTimeout(() => {
-      const value = this.shell.viewer.scrollTop;
-      this.scrollMemo.set(path, value);
-      if (hasStorage()) {
-        void chrome.storage.local.set({ [SCROLL_KEY]: Object.fromEntries(this.scrollMemo) });
+      this.scrollMemo.set(path, this.shell.viewer.scrollTop);
+      if (hasChromeStorage()) {
+        void chrome.storage.local.set({ [key]: Object.fromEntries(this.scrollMemo) });
       }
     }, 150);
   }

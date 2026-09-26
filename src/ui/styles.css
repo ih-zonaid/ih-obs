@@ -256,6 +256,38 @@ body {
 .home-row .explorer-star.on { opacity: 1; }
 .home-hint { color: var(--fg-dim); font-size: 13px; }
 
+.hub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.hub-head .home-title { margin: 0; }
+.hub-row.current { background: var(--bg-2); }
+.hub-row.current .home-name { color: var(--accent); font-weight: 600; }
+.hub-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+.hub-badge.ok { color: #9ece6a; border-color: #9ece6a44; }
+.hub-badge.warn { color: var(--hl); border-color: #f5c51844; }
+.hub-action {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-dim);
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.hub-action:hover { color: var(--fg); background: var(--bg-3); }
+
+.vault-chip.bound { color: var(--accent); border-color: var(--accent); }
+
 .json-view {
   max-width: 900px;
   margin: 0 auto;

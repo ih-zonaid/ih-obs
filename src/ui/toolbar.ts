@@ -1,7 +1,7 @@
 import type { OverlayMode } from "../overlay/overlay";
 
 export interface ToolbarHandlers {
-  onPickVault(): void;
+  onOpenHub(): void;
   onMode(mode: OverlayMode): void;
   onRevealAll(revealed: boolean): void;
   onToggleReveal(): void;
@@ -26,7 +26,14 @@ export class Toolbar {
     this.root.innerHTML = "";
 
     const home = this.button("home", () => this.h.onHome(), "go-home");
-    const vault = this.button("vault", () => this.h.onPickVault(), "toggle-vault");
+
+    const vault = document.createElement("button");
+    vault.className = "tb-btn vault-chip";
+    vault.dataset.action = "open-hub";
+    vault.id = "tb-vault";
+    vault.textContent = "vaults";
+    vault.title = "switch vault";
+    vault.addEventListener("click", () => this.h.onOpenHub());
 
     const title = document.createElement("span");
     title.className = "tb-title";
@@ -75,6 +82,12 @@ export class Toolbar {
   setTitle(text: string): void {
     const el = this.root.querySelector("#tb-title");
     if (el) el.textContent = text;
+  }
+
+  setVaultLabel(label: string | null): void {
+    const el = this.root.querySelector("#tb-vault");
+    if (el) el.textContent = label ?? "vaults";
+    if (el) el.classList.toggle("bound", !!label);
   }
 
   setZoom(zoom: number): void {
