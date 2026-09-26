@@ -71,6 +71,42 @@ body {
   min-width: 130px;
   text-align: left;
 }
+.tb-zoombox {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+}
+.tb-zoombox.hidden { display: none; }
+.tb-icon {
+  padding: 3px 8px;
+  font-size: 13px;
+  line-height: 1;
+}
+.tb-zoom-btn { min-width: 52px; text-align: center; }
+.tb-page {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.tb-page.hidden { display: none; }
+.tb-page-input {
+  width: 42px;
+  padding: 3px 6px;
+  text-align: center;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.tb-page-input:focus { border-color: var(--accent); }
+.tb-page-total { font-variant-numeric: tabular-nums; }
 .tb-zoom { color: var(--fg-dim); font-size: 12px; margin-left: 8px; font-variant-numeric: tabular-nums; }
 .tb-spacer { flex: 1; }
 

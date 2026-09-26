@@ -195,8 +195,24 @@ export class App {
         this.overlay?.toggleReveal();
         void this.persist();
       },
-      onSave: () => void this.persist()
+      onSave: () => void this.persist(),
+      onZoomIn: () => this.nudgeZoom(1.15),
+      onZoomOut: () => this.nudgeZoom(1 / 1.15),
+      onZoomReset: () => this.setZoom(1),
+      onGoToPage: (page) => this.view?.goToPage?.(page)
     });
+  }
+
+  private nudgeZoom(factor: number): void {
+    this.setZoom((this.view?.getZoom?.() ?? 1) * factor);
+  }
+
+  private setZoom(zoom: number): void {
+    if (!this.view?.setZoom) return;
+    const applied = this.view.setZoom(zoom);
+    this.toolbar.setZoom(applied);
+    this.overlay?.repaint();
+    this.segLayer?.repaint();
   }
 
   private applyTheme(theme: "dark" | "light"): void {
@@ -401,6 +417,7 @@ export class App {
   private setupZoom(view: DocView): void {
     this.zoomCtl?.destroy();
     this.zoomCtl = null;
+    this.toolbar.setZoomVisible(!!view.setZoom);
     if (!view.setZoom) return;
     this.zoomCtl = new ZoomController({
       viewer: this.shell.viewer,
@@ -415,6 +432,13 @@ export class App {
       }
     });
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
+
+    if (view.pageCount && view.onPageChange) {
+      view.onPageChange((page) => this.toolbar.setPage(page, view.pageCount?.() ?? 1));
+      this.toolbar.setPage(view.currentPage?.() ?? 1, view.pageCount());
+    } else {
+      this.toolbar.setPage(1, 1);
+    }
   }
 
   private scrollKey(vaultId: string): string {
@@ -575,6 +599,8 @@ export class App {
     this.shell.root.querySelector(".workspace")?.classList.remove("has-outline");
     this.zoomCtl?.destroy();
     this.zoomCtl = null;
+    this.toolbar.setZoomVisible(false);
+    this.toolbar.setPage(1, 1);
     this.view?.destroy();
     this.view = null;
   }

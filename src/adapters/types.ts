@@ -14,6 +14,10 @@ export interface DocView {
   setZoom?(zoom: number): number;
   getZoom?(): number;
   getPageImages?(pageIndices: number[], scale: number): Promise<PageImage[]>;
+  pageCount?(): number;
+  currentPage?(): number;
+  goToPage?(page: number): void;
+  onPageChange?(cb: (page: number) => void): void;
   destroy(): void;
 }
 

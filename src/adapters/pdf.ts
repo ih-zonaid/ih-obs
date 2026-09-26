@@ -142,10 +142,58 @@ export const pdfAdapter: DocAdapter = {
       pump();
     };
 
+    let currentPage = 1;
+    let pageCb: ((page: number) => void) | null = null;
+    let pageRaf = 0;
+
+    const computeCurrentPage = (): void => {
+      const rootTop = ctx.container.getBoundingClientRect().top;
+      const probe = rootTop + ctx.container.clientHeight * 0.35;
+      let best = 1;
+      for (const n of nodes) {
+        const rect = n.wrap.getBoundingClientRect();
+        if (rect.top <= probe && rect.bottom >= probe) {
+          best = n.index + 1;
+          break;
+        }
+        if (rect.top > probe) break;
+        best = n.index + 1;
+      }
+      if (best !== currentPage) {
+        currentPage = best;
+        pageCb?.(best);
+      }
+    };
+
+    const onScroll = (): void => {
+      if (pageRaf) return;
+      pageRaf = requestAnimationFrame(() => {
+        pageRaf = 0;
+        computeCurrentPage();
+      });
+    };
+    ctx.container.addEventListener("scroll", onScroll, { passive: true });
+
     return {
       kind: "pdf",
       path: ctx.path,
       surfaces,
+      pageCount() {
+        return nodes.length;
+      },
+      currentPage() {
+        return currentPage;
+      },
+      goToPage(page: number) {
+        const target = nodes[Math.max(0, Math.min(nodes.length - 1, page - 1))];
+        if (!target) return;
+        target.wrap.scrollIntoView({ block: "start" });
+        currentPage = target.index + 1;
+        pageCb?.(currentPage);
+      },
+      onPageChange(cb: (page: number) => void) {
+        pageCb = cb;
+      },
       getZoom() {
         return zoom;
       },
@@ -180,6 +228,8 @@ export const pdfAdapter: DocAdapter = {
       destroy() {
         destroyed = true;
         observer.disconnect();
+        ctx.container.removeEventListener("scroll", onScroll);
+        if (pageRaf) cancelAnimationFrame(pageRaf);
         nodes.forEach((n) => n.task?.cancel());
         void task.destroy();
         nodes.forEach((n) => n.wrap.remove());
