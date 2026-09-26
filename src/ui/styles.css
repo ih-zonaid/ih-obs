@@ -64,6 +64,12 @@ body {
 .tb-btn.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 
 .tb-title { color: var(--fg-dim); font-size: 12px; margin-left: 8px; }
+.tb-search {
+  color: var(--fg-dim);
+  font-size: 12px;
+  min-width: 130px;
+  text-align: left;
+}
 .tb-zoom { color: var(--fg-dim); font-size: 12px; margin-left: 8px; font-variant-numeric: tabular-nums; }
 .tb-spacer { flex: 1; }
 
@@ -287,6 +293,52 @@ body {
 .hub-action:hover { color: var(--fg); background: var(--bg-3); }
 
 .vault-chip.bound { color: var(--accent); border-color: var(--accent); }
+
+.palette-root { position: absolute; inset: 0; z-index: 50; }
+.palette-root.hidden { display: none; }
+.palette-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.palette {
+  position: relative;
+  width: min(620px, 90vw);
+  margin: 10vh auto 0;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg);
+  padding: 12px 16px;
+  font-size: 15px;
+  outline: none;
+}
+.palette-list { max-height: 52vh; overflow: auto; padding: 6px; }
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.palette-row.selected { background: var(--accent); color: #0b0d10; }
+.palette-row.selected .palette-dir { color: rgba(0, 0, 0, 0.55); }
+.palette-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-name b { color: var(--accent); font-weight: 700; }
+.palette-row.selected .palette-name { color: #0b0d10; }
+.palette-row.selected .palette-name b { color: #0b0d10; text-decoration: underline; }
+.palette-dir { color: var(--fg-dim); font-size: 11px; flex: 0 0 auto; }
+.palette-empty { padding: 14px; color: var(--fg-dim); font-size: 13px; text-align: center; }
 
 .json-view {
   max-width: 900px;

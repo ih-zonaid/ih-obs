@@ -21,6 +21,7 @@ import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
+import { Palette } from "../ui/palette";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
 import { ZoomController } from "../ui/zoom";
@@ -32,6 +33,7 @@ interface Shell {
   root: HTMLElement;
   explorer: HTMLElement;
   viewer: HTMLElement;
+  palette: HTMLElement;
 }
 
 function buildShell(mount: HTMLElement): Shell {
@@ -52,11 +54,14 @@ function buildShell(mount: HTMLElement): Shell {
   viewer.className = "viewer empty";
   viewer.textContent = "no vault";
 
+  const palette = document.createElement("div");
+  palette.className = "palette-root hidden";
+
   workspace.append(explorer, viewer);
-  shell.append(toolbar, workspace);
+  shell.append(toolbar, workspace, palette);
   mount.appendChild(shell);
 
-  return { root: shell, explorer, viewer };
+  return { root: shell, explorer, viewer, palette };
 }
 
 export class App {
@@ -65,6 +70,7 @@ export class App {
   private explorer!: Explorer;
   private home!: Home;
   private hub!: VaultHub;
+  private palette!: Palette;
 
   private vaults: VaultRecord[] = [];
   private vault: VaultRecord | null = null;
@@ -147,8 +153,13 @@ export class App {
       onForget: (id) => void this.forgetVault(id)
     });
 
+    this.palette = new Palette(this.shell.palette, {
+      onOpen: (path) => void this.openPath(path)
+    });
+
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
       onOpenHub: () => this.showHub(),
+      onOpenPalette: () => this.palette.toggle(),
       onHome: () => this.showHome(),
       onToggleTheme: () => void this.toggleTheme(),
       onMode: (mode) => {
@@ -187,6 +198,7 @@ export class App {
     this.toolbar.setVaultLabel(null);
     this.shell.root.classList.add("vault-collapsed");
     this.explorer.render({ name: "", path: "", kind: "directory", children: [] });
+    this.palette.setTree({ name: "", path: "", kind: "directory", children: [] });
     this.vaults = await listVaults();
     const status = new Map<string, boolean>();
     for (const v of this.vaults) {
@@ -302,6 +314,7 @@ export class App {
     const prefs = this.prefs.get();
     this.explorer.setState(prefs.expanded, prefs.pinned);
     this.explorer.render(tree);
+    this.palette.setTree(tree);
   }
 
   private async togglePin(path: string): Promise<void> {

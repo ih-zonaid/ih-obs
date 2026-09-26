@@ -2,6 +2,7 @@ import type { OverlayMode } from "../overlay/overlay";
 
 export interface ToolbarHandlers {
   onOpenHub(): void;
+  onOpenPalette(): void;
   onMode(mode: OverlayMode): void;
   onRevealAll(revealed: boolean): void;
   onToggleReveal(): void;
@@ -26,6 +27,13 @@ export class Toolbar {
     this.root.innerHTML = "";
 
     const home = this.button("home", () => this.h.onHome(), "go-home");
+
+    const search = document.createElement("button");
+    search.className = "tb-btn tb-search";
+    search.dataset.action = "open-palette";
+    search.textContent = "go to file…";
+    search.title = "quick open (⌘/Ctrl+P)";
+    search.addEventListener("click", () => this.h.onOpenPalette());
 
     const vault = document.createElement("button");
     vault.className = "tb-btn vault-chip";
@@ -55,7 +63,7 @@ export class Toolbar {
     const save = this.button("save", () => this.h.onSave());
     const theme = this.button("theme", () => this.h.onToggleTheme(), "toggle-theme");
 
-    this.root.append(home, vault, title, zoom, spacer, occlude, highlight, reveal, hideAll, save, theme);
+    this.root.append(home, search, vault, title, zoom, spacer, occlude, highlight, reveal, hideAll, save, theme);
   }
 
   private button(label: string, onClick: () => void, extra?: string): HTMLButtonElement {
