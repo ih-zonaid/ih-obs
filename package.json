@@ -1,0 +1,21 @@
+{
+  "name": "ihobs",
+  "version": "0.1.0",
+  "description": "Minimal Obsidian-style vault reader with occlusion for active recall.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "marked": "^12.0.2",
+    "pdfjs-dist": "^4.4.168"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.14.10",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3"
+  }
+}
