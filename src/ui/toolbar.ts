@@ -112,8 +112,13 @@ export class Toolbar {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const n = parseInt(input.value, 10);
-        if (Number.isFinite(n) && n > 0) this.h.onGoToPage(n);
+        const total = Number(input.max) || 1;
+        let n = parseInt(input.value, 10);
+        if (!Number.isFinite(n)) n = Number(input.dataset.value) || 1;
+        n = Math.max(1, Math.min(total, n));
+        input.value = String(n);
+        input.dataset.value = String(n);
+        this.h.onGoToPage(n);
         input.blur();
       }
     });

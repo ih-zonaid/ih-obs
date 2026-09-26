@@ -147,17 +147,22 @@ export const pdfAdapter: DocAdapter = {
     let pageRaf = 0;
 
     const computeCurrentPage = (): void => {
-      const rootTop = ctx.container.getBoundingClientRect().top;
-      const probe = rootTop + ctx.container.clientHeight * 0.35;
-      let best = 1;
+      const rootRect = ctx.container.getBoundingClientRect();
+      let best = currentPage;
+      let bestArea = -1;
       for (const n of nodes) {
         const rect = n.wrap.getBoundingClientRect();
-        if (rect.top <= probe && rect.bottom >= probe) {
-          best = n.index + 1;
-          break;
+        const top = Math.max(rect.top, rootRect.top);
+        const bottom = Math.min(rect.bottom, rootRect.bottom);
+        const visible = bottom - top;
+        if (visible <= 0) {
+          if (rect.top > rootRect.bottom) break;
+          continue;
         }
-        if (rect.top > probe) break;
-        best = n.index + 1;
+        if (visible > bestArea) {
+          bestArea = visible;
+          best = n.index + 1;
+        }
       }
       if (best !== currentPage) {
         currentPage = best;
