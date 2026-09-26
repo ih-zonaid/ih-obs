@@ -16,7 +16,7 @@ export interface Region {
 export interface Sidecar {
   version: 1;
   doc: string;
-  kind: "image" | "pdf" | "markdown";
+  kind: "image" | "pdf" | "markdown" | "json";
   updatedAt: number;
   regions: Region[];
 }

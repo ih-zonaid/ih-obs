@@ -255,3 +255,33 @@ body {
 .home-row:hover .explorer-star { opacity: 0.8; }
 .home-row .explorer-star.on { opacity: 1; }
 .home-hint { color: var(--fg-dim); font-size: 13px; }
+
+.json-view {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 28px 120px;
+}
+.json-pre {
+  margin: 0;
+  padding: 16px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+  font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+.json-note {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--hl);
+}
+.json-key { color: var(--accent); }
+.json-str { color: #9ece6a; }
+.json-num { color: #ff9e64; }
+.json-bool { color: #bb9af7; }
+.json-null { color: var(--fg-dim); }
+
+.shell[data-theme="light"] .json-str { color: #2e7d32; }
+.shell[data-theme="light"] .json-num { color: #b45309; }
+.shell[data-theme="light"] .json-bool { color: #7c3aed; }

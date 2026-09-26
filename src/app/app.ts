@@ -279,6 +279,7 @@ export class App {
 
   private async attachOverlay(view: DocView): Promise<void> {
     if (!this.store || !this.currentPath) return;
+    if (view.kind === "json") return;
     const model = await this.store.load(this.currentPath, view.kind);
     const overlay = new Overlay(view.surfaces, model.regions, {
       onChange: () => void this.persist()

@@ -1,9 +1,10 @@
 import { imageAdapter } from "./image";
+import { jsonAdapter } from "./json";
 import { markdownAdapter } from "./markdown";
 import { pdfAdapter } from "./pdf";
 import type { DocAdapter } from "./types";
 
-const ADAPTERS: DocAdapter[] = [imageAdapter, pdfAdapter, markdownAdapter];
+const ADAPTERS: DocAdapter[] = [imageAdapter, pdfAdapter, markdownAdapter, jsonAdapter];
 
 export function pickAdapter(path: string): DocAdapter | null {
   return ADAPTERS.find((a) => a.matches(path)) ?? null;

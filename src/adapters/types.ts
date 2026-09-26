@@ -1,4 +1,4 @@
-export type DocKind = "markdown" | "image" | "pdf";
+export type DocKind = "markdown" | "image" | "pdf" | "json";
 
 export interface Surface {
   index: number;

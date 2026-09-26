@@ -1,9 +1,11 @@
 import type { FsNode } from "./types";
 
-const IGNORED = new Set([".ihobs", ".git", ".obsidian", "node_modules", ".DS_Store"]);
+const IGNORED = new Set([".git", ".obsidian", "node_modules", ".DS_Store"]);
+const HIDDEN_ALLOWED = new Set([".ihobs"]);
 const MARKDOWN = new Set([".md", ".markdown", ".mdx"]);
 const IMAGE = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
 const PDF = new Set([".pdf"]);
+const JSON = new Set([".json"]);
 
 export function extOf(name: string): string {
   const i = name.lastIndexOf(".");
@@ -22,8 +24,12 @@ export function isPdf(name: string): boolean {
   return PDF.has(extOf(name));
 }
 
+export function isJson(name: string): boolean {
+  return JSON.has(extOf(name));
+}
+
 export function isSupported(name: string): boolean {
-  return isMarkdown(name) || isImage(name) || isPdf(name);
+  return isMarkdown(name) || isImage(name) || isPdf(name) || isJson(name);
 }
 
 interface DirWithEntries extends FileSystemDirectoryHandle {
@@ -42,7 +48,8 @@ async function walk(
 ): Promise<FsNode> {
   const children: FsNode[] = [];
   for await (const [childName, handle] of (dir as DirWithEntries).entries()) {
-    if (IGNORED.has(childName) || childName.startsWith(".")) continue;
+    if (IGNORED.has(childName)) continue;
+    if (childName.startsWith(".") && !HIDDEN_ALLOWED.has(childName)) continue;
     const childPath = path ? `${path}/${childName}` : childName;
     if (handle.kind === "directory") {
       if (depth < 8) {
