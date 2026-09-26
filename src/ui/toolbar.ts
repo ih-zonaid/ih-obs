@@ -6,6 +6,8 @@ export interface ToolbarHandlers {
   onRevealAll(revealed: boolean): void;
   onToggleReveal(): void;
   onSave(): void;
+  onHome(): void;
+  onToggleTheme(): void;
 }
 
 export class Toolbar {
@@ -23,6 +25,7 @@ export class Toolbar {
   private build(): void {
     this.root.innerHTML = "";
 
+    const home = this.button("home", () => this.h.onHome(), "go-home");
     const vault = this.button("vault", () => this.h.onPickVault(), "toggle-vault");
 
     const title = document.createElement("span");
@@ -43,8 +46,9 @@ export class Toolbar {
     const reveal = this.button("reveal", () => this.h.onToggleReveal());
     const hideAll = this.button("hide", () => this.h.onRevealAll(false));
     const save = this.button("save", () => this.h.onSave());
+    const theme = this.button("theme", () => this.h.onToggleTheme(), "toggle-theme");
 
-    this.root.append(vault, title, zoom, spacer, occlude, highlight, reveal, hideAll, save);
+    this.root.append(home, vault, title, zoom, spacer, occlude, highlight, reveal, hideAll, save, theme);
   }
 
   private button(label: string, onClick: () => void, extra?: string): HTMLButtonElement {
@@ -76,5 +80,10 @@ export class Toolbar {
   setZoom(zoom: number): void {
     const el = this.root.querySelector("#tb-zoom");
     if (el) el.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  setThemeIcon(theme: "dark" | "light"): void {
+    const el = this.root.querySelector('[data-action="toggle-theme"]');
+    if (el) el.textContent = theme === "dark" ? "light" : "dark";
   }
 }

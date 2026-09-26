@@ -2,9 +2,11 @@ import { pickAdapter, type DocView } from "../adapters";
 import { ensureReadWrite, loadRoot, pickRoot } from "../host/idb";
 import { Overlay, type OverlayMode } from "../overlay/overlay";
 import { SidecarStore } from "../store/sidecar";
+import { PrefsStore, type Prefs } from "../store/prefs";
 import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
 import { Explorer } from "../ui/explorer";
+import { Home } from "../ui/home";
 import { Toolbar } from "../ui/toolbar";
 import { ZoomController } from "../ui/zoom";
 import "../ui/styles.css";
@@ -50,6 +52,8 @@ export class App {
   private shell: Shell;
   private toolbar!: Toolbar;
   private explorer!: Explorer;
+  private home!: Home;
+  private prefs = new PrefsStore();
   private vault: FileSystemDirectoryHandle | null = null;
   private store: SidecarStore | null = null;
   private view: DocView | null = null;
@@ -65,17 +69,51 @@ export class App {
     this.shell = buildShell(mount);
     this.onScroll = () => this.memoScroll();
     this.shell.viewer.addEventListener("scroll", this.onScroll, { passive: true });
+    void this.boot();
+  }
+
+  private async boot(): Promise<void> {
+    const prefs = await this.prefs.load();
+    this.applyTheme(prefs.theme);
     this.wire();
-    void this.restore();
+    this.toolbar.setThemeIcon(prefs.theme);
+    this.explorer.setState(prefs.expanded, prefs.pinned);
+    await this.loadScroll();
+
+    const handle = await loadRoot();
+    if (!handle) {
+      this.showHome();
+      return;
+    }
+    this.vault = handle;
+    this.store = new SidecarStore(handle);
+    await this.refreshTree();
+
+    if (prefs.lastOpened) {
+      const ok = await this.nodeHandle(prefs.lastOpened);
+      if (ok) await this.openPath(prefs.lastOpened);
+      else this.showHome();
+    } else {
+      this.showHome();
+    }
   }
 
   private wire(): void {
     this.explorer = new Explorer(this.shell.explorer, {
-      onOpen: (path) => void this.openPath(path)
+      onOpen: (path) => void this.openPath(path),
+      onTogglePin: (path) => void this.togglePin(path),
+      onExpandedChange: (expanded) => void this.prefs.setExpanded(expanded)
+    });
+
+    this.home = new Home(this.shell.viewer, {
+      onOpen: (path) => void this.openPath(path),
+      onTogglePin: (path) => void this.togglePin(path)
     });
 
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
       onPickVault: () => void this.pick(),
+      onHome: () => this.showHome(),
+      onToggleTheme: () => void this.toggleTheme(),
       onMode: (mode) => {
         this.mode = mode;
         this.overlay?.setMode(mode);
@@ -92,12 +130,25 @@ export class App {
     });
   }
 
-  private async restore(): Promise<void> {
-    const handle = await loadRoot();
-    if (!handle) return;
-    this.vault = handle;
-    this.store = new SidecarStore(handle);
-    await this.refreshTree();
+  private applyTheme(theme: Prefs["theme"]): void {
+    this.shell.root.dataset.theme = theme;
+    document.documentElement.dataset.theme = theme;
+  }
+
+  private async toggleTheme(): Promise<void> {
+    const next: Prefs["theme"] = this.prefs.get().theme === "dark" ? "light" : "dark";
+    await this.prefs.setTheme(next);
+    this.applyTheme(next);
+    this.toolbar.setThemeIcon(next);
+  }
+
+  private showHome(): void {
+    this.teardown();
+    this.currentPath = null;
+    this.toolbar.setTitle("no document");
+    this.toolbar.setZoom(1);
+    this.explorer.setActive(null);
+    this.home.show(this.prefs.get());
   }
 
   private async pick(): Promise<void> {
@@ -115,8 +166,22 @@ export class App {
   private async refreshTree(): Promise<void> {
     if (!this.vault) return;
     const tree = await listTree(this.vault);
+    const prefs = this.prefs.get();
+    this.explorer.setState(prefs.expanded, prefs.pinned);
     this.explorer.render(tree);
     this.shell.root.classList.remove("vault-collapsed");
+  }
+
+  private async togglePin(path: string): Promise<void> {
+    await this.prefs.togglePin(path);
+    const prefs = this.prefs.get();
+    this.explorer.setState(prefs.expanded, prefs.pinned);
+    if (this.vault) {
+      const tree = await listTree(this.vault);
+      this.explorer.render(tree);
+      this.explorer.setActive(this.currentPath);
+    }
+    if (!this.currentPath) this.home.show(prefs);
   }
 
   private async nodeHandle(path: string): Promise<FileSystemFileHandle | null> {
@@ -124,7 +189,11 @@ export class App {
     let dir: FileSystemDirectoryHandle = this.vault;
     const segs = splitPath(path);
     for (let i = 0; i < segs.length - 1; i++) {
-      dir = await dir.getDirectoryHandle(segs[i]);
+      try {
+        dir = await dir.getDirectoryHandle(segs[i]);
+      } catch {
+        return null;
+      }
     }
     try {
       return await dir.getFileHandle(segs[segs.length - 1]);
@@ -146,6 +215,7 @@ export class App {
     this.shell.viewer.innerHTML = "";
     this.toolbar.setTitle(path);
     this.explorer.setActive(path);
+    this.explorer.revealActive();
     this.currentPath = path;
 
     const view = await adapter.load({
@@ -159,6 +229,7 @@ export class App {
     this.setupZoom(view);
     await this.attachOverlay(view);
     await this.restoreScroll(path);
+    await this.prefs.pushRecent(path);
   }
 
   private setupZoom(view: DocView): void {
@@ -178,6 +249,13 @@ export class App {
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
   }
 
+  private async loadScroll(): Promise<void> {
+    if (!hasStorage()) return;
+    const got = await chrome.storage.local.get(SCROLL_KEY);
+    const map = (got[SCROLL_KEY] as Record<string, number>) ?? {};
+    for (const [k, v] of Object.entries(map)) this.scrollMemo.set(k, v);
+  }
+
   private memoScroll(): void {
     if (!this.currentPath) return;
     if (this.scrollTimer !== null) window.clearTimeout(this.scrollTimer);
@@ -192,16 +270,10 @@ export class App {
   }
 
   private async restoreScroll(path: string): Promise<void> {
-    let stored = this.scrollMemo.get(path);
-    if (stored === undefined && hasStorage()) {
-      const got = await chrome.storage.local.get(SCROLL_KEY);
-      const map = (got[SCROLL_KEY] as Record<string, number>) ?? {};
-      for (const [k, v] of Object.entries(map)) this.scrollMemo.set(k, v);
-      stored = map[path];
-    }
+    const stored = this.scrollMemo.get(path);
     if (stored === undefined) return;
     requestAnimationFrame(() => {
-      this.shell.viewer.scrollTop = stored as number;
+      this.shell.viewer.scrollTop = stored;
     });
   }
 
