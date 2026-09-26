@@ -63,7 +63,10 @@ export class Overlay {
 
   private surfaceSize(index: number): { w: number; h: number } {
     const s = this.surfaces.find((x) => x.index === index);
-    return s ? { w: s.width, h: s.height } : { w: 1, h: 1 };
+    if (!s) return { w: 1, h: 1 };
+    const w = s.el.clientWidth || s.width;
+    const h = s.el.clientHeight || s.height;
+    return { w: w || 1, h: h || 1 };
   }
 
   private localPoint(e: PointerEvent, layer: HTMLElement): { x: number; y: number } {
@@ -157,6 +160,10 @@ export class Overlay {
 
   setRegions(regions: Region[]): void {
     this.regions = regions;
+    this.paint();
+  }
+
+  repaint(): void {
     this.paint();
   }
 

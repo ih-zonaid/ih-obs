@@ -6,7 +6,14 @@ import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
 import { Explorer } from "../ui/explorer";
 import { Toolbar } from "../ui/toolbar";
+import { ZoomController } from "../ui/zoom";
 import "../ui/styles.css";
+
+const SCROLL_KEY = "ihobs:scroll";
+
+function hasStorage(): boolean {
+  return typeof chrome !== "undefined" && !!chrome.storage?.local;
+}
 
 interface Shell {
   root: HTMLElement;
@@ -47,11 +54,17 @@ export class App {
   private store: SidecarStore | null = null;
   private view: DocView | null = null;
   private overlay: Overlay | null = null;
+  private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
   private currentPath: string | null = null;
+  private scrollMemo = new Map<string, number>();
+  private readonly onScroll: () => void;
+  private scrollTimer: number | null = null;
 
   constructor(mount: HTMLElement) {
     this.shell = buildShell(mount);
+    this.onScroll = () => this.memoScroll();
+    this.shell.viewer.addEventListener("scroll", this.onScroll, { passive: true });
     this.wire();
     void this.restore();
   }
@@ -143,7 +156,53 @@ export class App {
     });
     this.view = view;
 
+    this.setupZoom(view);
     await this.attachOverlay(view);
+    await this.restoreScroll(path);
+  }
+
+  private setupZoom(view: DocView): void {
+    this.zoomCtl?.destroy();
+    this.zoomCtl = null;
+    if (!view.setZoom) return;
+    const viewer = this.shell.viewer;
+    this.zoomCtl = new ZoomController({
+      viewer,
+      getZoom: () => view.getZoom?.() ?? 1,
+      onChange: (z) => {
+        const applied = view.setZoom?.(z) ?? z;
+        this.toolbar.setZoom(applied);
+      },
+      onRepaint: () => this.overlay?.repaint()
+    });
+    this.toolbar.setZoom(view.getZoom?.() ?? 1);
+  }
+
+  private memoScroll(): void {
+    if (!this.currentPath) return;
+    if (this.scrollTimer !== null) window.clearTimeout(this.scrollTimer);
+    const path = this.currentPath;
+    this.scrollTimer = window.setTimeout(() => {
+      const value = this.shell.viewer.scrollTop;
+      this.scrollMemo.set(path, value);
+      if (hasStorage()) {
+        void chrome.storage.local.set({ [SCROLL_KEY]: Object.fromEntries(this.scrollMemo) });
+      }
+    }, 150);
+  }
+
+  private async restoreScroll(path: string): Promise<void> {
+    let stored = this.scrollMemo.get(path);
+    if (stored === undefined && hasStorage()) {
+      const got = await chrome.storage.local.get(SCROLL_KEY);
+      const map = (got[SCROLL_KEY] as Record<string, number>) ?? {};
+      for (const [k, v] of Object.entries(map)) this.scrollMemo.set(k, v);
+      stored = map[path];
+    }
+    if (stored === undefined) return;
+    requestAnimationFrame(() => {
+      this.shell.viewer.scrollTop = stored as number;
+    });
   }
 
   private async attachOverlay(view: DocView): Promise<void> {
@@ -164,6 +223,8 @@ export class App {
   private teardown(): void {
     this.overlay?.destroy();
     this.overlay = null;
+    this.zoomCtl?.destroy();
+    this.zoomCtl = null;
     this.view?.destroy();
     this.view = null;
   }

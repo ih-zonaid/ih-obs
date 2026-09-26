@@ -30,6 +30,11 @@ export class Toolbar {
     title.id = "tb-title";
     title.textContent = "no document";
 
+    const zoom = document.createElement("span");
+    zoom.className = "tb-zoom";
+    zoom.id = "tb-zoom";
+    zoom.textContent = "";
+
     const spacer = document.createElement("div");
     spacer.className = "tb-spacer";
 
@@ -39,7 +44,7 @@ export class Toolbar {
     const hideAll = this.button("hide", () => this.h.onRevealAll(false));
     const save = this.button("save", () => this.h.onSave());
 
-    this.root.append(vault, title, spacer, occlude, highlight, reveal, hideAll, save);
+    this.root.append(vault, title, zoom, spacer, occlude, highlight, reveal, hideAll, save);
   }
 
   private button(label: string, onClick: () => void, extra?: string): HTMLButtonElement {
@@ -66,5 +71,10 @@ export class Toolbar {
   setTitle(text: string): void {
     const el = this.root.querySelector("#tb-title");
     if (el) el.textContent = text;
+  }
+
+  setZoom(zoom: number): void {
+    const el = this.root.querySelector("#tb-zoom");
+    if (el) el.textContent = `${Math.round(zoom * 100)}%`;
   }
 }

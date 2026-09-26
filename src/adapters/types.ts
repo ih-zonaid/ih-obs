@@ -11,6 +11,8 @@ export interface DocView {
   kind: DocKind;
   path: string;
   surfaces: Surface[];
+  setZoom?(zoom: number): number;
+  getZoom?(): number;
   destroy(): void;
 }
 

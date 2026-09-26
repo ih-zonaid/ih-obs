@@ -1,6 +1,9 @@
 import { isImage } from "../vault/tree";
 import type { DocAdapter, DocView, LoadContext, Surface } from "./types";
 
+export const MIN_ZOOM = 0.4;
+export const MAX_ZOOM = 4;
+
 export const imageAdapter: DocAdapter = {
   kind: "image",
   matches: isImage,
@@ -29,6 +32,15 @@ export const imageAdapter: DocAdapter = {
       img.onerror = () => reject(new Error("image load failed"));
     });
 
+    const naturalW = img.naturalWidth;
+    let zoom = 1;
+
+    const apply = (): void => {
+      img.style.maxWidth = zoom <= 1 ? "100%" : "none";
+      img.style.width = `${Math.round(naturalW * zoom)}px`;
+    };
+    apply();
+
     const surface: Surface = {
       index: 0,
       el: wrap,
@@ -40,6 +52,14 @@ export const imageAdapter: DocAdapter = {
       kind: "image",
       path: ctx.path,
       surfaces: [surface],
+      getZoom() {
+        return zoom;
+      },
+      setZoom(next: number) {
+        zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+        apply();
+        return zoom;
+      },
       destroy() {
         URL.revokeObjectURL(url);
         stage.remove();
