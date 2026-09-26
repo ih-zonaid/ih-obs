@@ -2,7 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { readBytes } from "../vault/fs";
 import { isPdf } from "../vault/tree";
-import type { DocAdapter, DocView, LoadContext, Surface } from "./types";
+import type { DocAdapter, DocView, LoadContext, PageImage, Surface } from "./types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -148,6 +148,27 @@ export const pdfAdapter: DocAdapter = {
       surfaces,
       getZoom() {
         return zoom;
+      },
+      async getPageImages(pageIndices: number[], scale: number): Promise<PageImage[]> {
+        const out: PageImage[] = [];
+        for (const index of pageIndices) {
+          const node = nodes[index];
+          if (!node) continue;
+          const viewport = node.page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(viewport.width));
+          canvas.height = Math.max(1, Math.floor(viewport.height));
+          const c = canvas.getContext("2d", { willReadFrequently: true });
+          if (!c) continue;
+          await node.page.render({ canvasContext: c, viewport }).promise;
+          out.push({
+            page: index,
+            width: canvas.width,
+            height: canvas.height,
+            image: c.getImageData(0, 0, canvas.width, canvas.height)
+          });
+        }
+        return out;
       },
       setZoom(next: number) {
         zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));

@@ -17,11 +17,16 @@ import { Overlay, type OverlayMode } from "../overlay/overlay";
 import { SidecarStore } from "../store/sidecar";
 import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
 import { hasChromeStorage } from "../store/kv";
+import { DEFAULT_RULES, type Segment, type SegmentRule } from "../store/schema";
+import { detectLayout } from "../segment/detect";
+import { toBitmap } from "../segment/layout";
 import { listTree } from "../vault/tree";
 import { splitPath } from "../vault/types";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
+import { Outline } from "../ui/outline";
 import { Palette } from "../ui/palette";
+import { SegmentLayer } from "../ui/segmentLayer";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
 import { ZoomController } from "../ui/zoom";
@@ -33,6 +38,7 @@ interface Shell {
   root: HTMLElement;
   explorer: HTMLElement;
   viewer: HTMLElement;
+  outline: HTMLElement;
   palette: HTMLElement;
 }
 
@@ -54,14 +60,17 @@ function buildShell(mount: HTMLElement): Shell {
   viewer.className = "viewer empty";
   viewer.textContent = "no vault";
 
+  const outline = document.createElement("div");
+  outline.className = "outline hidden";
+
   const palette = document.createElement("div");
   palette.className = "palette-root hidden";
 
-  workspace.append(explorer, viewer);
+  workspace.append(explorer, viewer, outline);
   shell.append(toolbar, workspace, palette);
   mount.appendChild(shell);
 
-  return { root: shell, explorer, viewer, palette };
+  return { root: shell, explorer, viewer, outline, palette };
 }
 
 export class App {
@@ -71,6 +80,7 @@ export class App {
   private home!: Home;
   private hub!: VaultHub;
   private palette!: Palette;
+  private outline!: Outline;
 
   private vaults: VaultRecord[] = [];
   private vault: VaultRecord | null = null;
@@ -79,6 +89,9 @@ export class App {
 
   private view: DocView | null = null;
   private overlay: Overlay | null = null;
+  private segLayer: SegmentLayer | null = null;
+  private segments: Segment[] = [];
+  private activeSegment: string | null = null;
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
   private currentPath: string | null = null;
@@ -155,6 +168,14 @@ export class App {
 
     this.palette = new Palette(this.shell.palette, {
       onOpen: (path) => void this.openPath(path)
+    });
+
+    this.outline = new Outline(this.shell.outline, {
+      onSelect: (id) => this.selectSegment(id),
+      onRename: (id, title) => void this.renameSegment(id, title),
+      onDelete: (id) => void this.deleteSegment(id),
+      onDetect: () => void this.runSegmentation(),
+      onClear: () => void this.clearSegments()
     });
 
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
@@ -388,7 +409,10 @@ export class App {
         const applied = view.setZoom?.(z) ?? z;
         this.toolbar.setZoom(applied);
       },
-      onRepaint: () => this.overlay?.repaint()
+      onRepaint: () => {
+        this.overlay?.repaint();
+        this.segLayer?.repaint();
+      }
     });
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
   }
@@ -435,16 +459,120 @@ export class App {
     });
     overlay.setMode(this.mode);
     this.overlay = overlay;
+
+    this.segments = model.segments;
+    this.activeSegment = null;
+    this.segLayer = new SegmentLayer(view.surfaces, {
+      onSelect: (id) => this.selectSegment(id),
+      getActive: () => this.activeSegment
+    });
+    this.segLayer.setSegments(this.segments);
+    this.refreshOutline();
+    this.updateOutlineVisibility();
+  }
+
+  private refreshOutline(): void {
+    this.outline.render(this.segments);
+    this.outline.setActive(this.activeSegment);
+  }
+
+  private updateOutlineVisibility(): void {
+    const show = this.view?.kind === "pdf" || this.view?.kind === "image";
+    this.shell.outline.classList.toggle("hidden", !show);
+    const ws = this.shell.root.querySelector(".workspace");
+    ws?.classList.toggle("has-outline", show);
+  }
+
+  private selectSegment(id: string): void {
+    this.activeSegment = id;
+    this.segLayer?.setVisible(true);
+    this.outline.setActive(id);
+    this.segLayer?.scrollTo(id);
+  }
+
+  private async renameSegment(id: string, title: string): Promise<void> {
+    const seg = this.segments.find((s) => s.id === id);
+    if (!seg) return;
+    seg.title = title;
+    this.refreshOutline();
+    await this.persistSegments();
+  }
+
+  private async deleteSegment(id: string): Promise<void> {
+    this.segments = this.segments.filter((s) => s.id !== id);
+    this.segments.forEach((s, i) => (s.order = i));
+    if (this.activeSegment === id) this.activeSegment = null;
+    this.segLayer?.setSegments(this.segments);
+    this.refreshOutline();
+    await this.persistSegments();
+  }
+
+  private async clearSegments(): Promise<void> {
+    this.segments = [];
+    this.activeSegment = null;
+    this.segLayer?.setSegments([]);
+    this.refreshOutline();
+    await this.persistSegments();
+  }
+
+  private async persistSegments(): Promise<void> {
+    if (!this.store || !this.view || !this.currentPath) return;
+    await this.store.saveSegments(this.currentPath, this.view.kind, this.segments);
+  }
+
+  private async runSegmentation(): Promise<void> {
+    if (!this.view || !this.store || !this.currentPath) return;
+    if (this.view.kind !== "pdf" || !this.view.getPageImages) {
+      window.alert("Auto-segment currently supports PDFs.");
+      return;
+    }
+    const rule: SegmentRule = DEFAULT_RULES[0];
+    this.outline.render(this.segments);
+    this.shell.outline.classList.remove("hidden");
+
+    try {
+      const pages = this.view.surfaces.map((s) => s.index);
+      const images = await this.view.getPageImages(pages, 1.2);
+      const found: Segment[] = [];
+      let order = 0;
+      for (const img of images) {
+        const bitmap = toBitmap(img.image);
+        const spans = detectLayout({ page: img.page, bitmap }, rule);
+        for (const span of spans) {
+          found.push({
+            id: `s_${order}_${Math.random().toString(36).slice(2, 7)}`,
+            type: "question",
+            title: `Q${order + 1}`,
+            order,
+            spans: [span]
+          });
+          order++;
+        }
+      }
+      this.segments = found;
+      this.segLayer?.setSegments(found);
+      this.segLayer?.setVisible(true);
+      this.refreshOutline();
+      await this.store.saveSegments(this.currentPath, this.view.kind, found, rule);
+    } catch {
+      window.alert("Segmentation failed.");
+    }
   }
 
   private async persist(): Promise<void> {
     if (!this.store || !this.overlay || !this.view || !this.currentPath) return;
-    await this.store.save(this.currentPath, this.view.kind, this.overlay.getRegions());
+    await this.store.saveRegions(this.currentPath, this.view.kind, this.overlay.getRegions());
   }
 
   private teardown(): void {
     this.overlay?.destroy();
     this.overlay = null;
+    this.segLayer?.destroy();
+    this.segLayer = null;
+    this.segments = [];
+    this.activeSegment = null;
+    this.shell.outline.classList.add("hidden");
+    this.shell.root.querySelector(".workspace")?.classList.remove("has-outline");
     this.zoomCtl?.destroy();
     this.zoomCtl = null;
     this.view?.destroy();

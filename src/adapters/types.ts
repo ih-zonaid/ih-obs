@@ -13,7 +13,15 @@ export interface DocView {
   surfaces: Surface[];
   setZoom?(zoom: number): number;
   getZoom?(): number;
+  getPageImages?(pageIndices: number[], scale: number): Promise<PageImage[]>;
   destroy(): void;
+}
+
+export interface PageImage {
+  page: number;
+  width: number;
+  height: number;
+  image: ImageData;
 }
 
 export interface LoadContext {
