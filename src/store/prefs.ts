@@ -10,6 +10,14 @@ export interface Prefs {
   pinned: string[];
   expanded: string[];
   lastOpened: string | null;
+  // Panel layout, kept per vault. `leftCollapsed` hides the file explorer;
+  // `railOpen`/`railTab` remember the right rail's visibility and active tab.
+  leftCollapsed: boolean;
+  railOpen: boolean;
+  railTab: "outline" | "notes";
+  // Set once the user opens/closes the rail themselves; until then we may
+  // auto-open the outline for the first paged document.
+  railConfigured: boolean;
 }
 
 export type Theme = "dark" | "light";
@@ -21,27 +29,40 @@ const DEFAULTS: Prefs = {
   recents: [],
   pinned: [],
   expanded: [],
-  lastOpened: null
+  lastOpened: null,
+  leftCollapsed: false,
+  railOpen: false,
+  railTab: "outline",
+  railConfigured: false
 };
 
 export class PrefsStore {
   private data: Prefs = { ...DEFAULTS };
   private loaded = false;
+  private stored = false;
   private key = "ihobs:prefs:global";
 
   withVault(vaultId: string): this {
     this.key = `ihobs:prefs:${vaultId}`;
     this.data = { ...DEFAULTS };
     this.loaded = false;
+    this.stored = false;
     return this;
   }
 
   async load(): Promise<Prefs> {
     if (this.loaded) return this.data;
     const stored = await kvGet<Partial<Prefs>>(this.key);
+    this.stored = !!stored;
     this.data = { ...DEFAULTS, ...(stored ?? {}) };
     this.loaded = true;
     return this.data;
+  }
+
+  // True when real preferences existed on disk, so callers can apply a layout
+  // default only on a genuinely first visit rather than overriding a choice.
+  hasStored(): boolean {
+    return this.stored;
   }
 
   get(): Prefs {

@@ -9,12 +9,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const BASE_SCALE = 1.6;
 export const MIN_ZOOM = 0.4;
 export const MAX_ZOOM = 4;
+// Matches .pdf-page { margin: 18px auto } — adjacent pages' vertical margins
+// collapse into one gap of this size, so this must track that CSS value.
+const PAGE_GAP = 18;
 
 interface PageNode {
   index: number;
   page: pdfjs.PDFPageProxy;
   wrap: HTMLElement;
   canvas: HTMLCanvasElement | null;
+  // Invisible, selectable glyph boxes laid over the raster page (pdf.js pattern).
+  textEl: HTMLElement | null;
+  textLayer: pdfjs.TextLayer | null;
   baseW: number;
   baseH: number;
   renderedScale: number;
@@ -22,19 +28,62 @@ interface PageNode {
   task: pdfjs.RenderTask | null;
 }
 
+// pdf.js TextLayer writes glyph boxes in PDF units and expects an ancestor to
+// expose the CSS-pixels-per-unit factor as --scale-factor (see setLayerDimensions).
+const scaleFactor = (zoom: number): number => BASE_SCALE * zoom;
+
 export const pdfAdapter: DocAdapter = {
   kind: "pdf",
   matches: isPdf,
   async load(ctx: LoadContext): Promise<DocView> {
     const data = await readBytes(ctx.handle);
+    if (ctx.signal.aborted) throw new DOMException("aborted", "AbortError");
     const task = pdfjs.getDocument({ data });
     const doc = await task.promise;
+    if (ctx.signal.aborted) {
+      void doc.destroy();
+      throw new DOMException("aborted", "AbortError");
+    }
     const ratio = window.devicePixelRatio || 1;
     const nodes: PageNode[] = [];
     const surfaces: Surface[] = [];
     let zoom = 1;
     let destroyed = false;
+    let textDebug = 0;
     const renderQueue: PageNode[] = [];
+
+    // Builds the selectable text layer over a page. Reuses an existing layer on
+    // zoom; empty for scanned pages that carry no embedded text.
+    const renderTextLayer = async (n: PageNode, viewport: pdfjs.PageViewport): Promise<void> => {
+      if (n.textLayer) {
+        n.textLayer.update({ viewport });
+        return;
+      }
+      const textContent = await n.page.getTextContent();
+      if (destroyed || n.textLayer) return;
+      const el = document.createElement("div");
+      el.className = "textLayer";
+      // Normalize the selection so pasted text matches what pdf.js's own viewer
+      // yields (ligatures, non-breaking spaces, stray nulls).
+      el.addEventListener("copy", (event) => {
+        const selection = document.getSelection();
+        if (!selection || !event.clipboardData) return;
+        event.clipboardData.setData(
+          "text/plain",
+          pdfjs.normalizeUnicode(selection.toString()).replace(/\u0000/g, "")
+        );
+        event.preventDefault();
+      });
+      n.textEl = el;
+      n.wrap.appendChild(el);
+      const layer = new pdfjs.TextLayer({
+        textContentSource: textContent,
+        container: el,
+        viewport
+      });
+      n.textLayer = layer;
+      await layer.render();
+    };
 
     const renderPage = async (n: PageNode): Promise<void> => {
       if (destroyed || n.rendering) return;
@@ -59,6 +108,7 @@ export const pdfAdapter: DocAdapter = {
         n.task = n.page.render({ canvasContext: cctx, viewport });
         await n.task.promise;
         n.renderedScale = target;
+        await renderTextLayer(n, viewport);
       } catch {
         /* cancelled or failed render */
       } finally {
@@ -90,14 +140,25 @@ export const pdfAdapter: DocAdapter = {
       { root: ctx.container, rootMargin: "800px 0px" }
     );
 
+    // Fetch all pages concurrently rather than one round-trip at a time; the
+    // worker pipelines these, so this is far faster than a sequential loop
+    // for documents with many pages.
+    const pages = await Promise.all(
+      Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1))
+    );
+
     for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
+      if (ctx.signal.aborted) break;
+      const page = pages[i - 1];
       const base = page.getViewport({ scale: BASE_SCALE });
       const wrap = document.createElement("div");
       wrap.className = "pdf-page ihobs-surface";
       wrap.dataset.surface = String(i - 1);
       wrap.style.width = `${base.width}px`;
       wrap.style.height = `${base.height}px`;
+      wrap.style.setProperty("--scale-factor", String(scaleFactor(1)));
+      wrap.classList.toggle("debug-text", textDebug === 1);
+      wrap.classList.toggle("debug-text-full", textDebug === 2);
 
       const placeholder = document.createElement("div");
       placeholder.className = "pdf-placeholder";
@@ -111,6 +172,8 @@ export const pdfAdapter: DocAdapter = {
         page,
         wrap,
         canvas: null,
+        textEl: null,
+        textLayer: null,
         baseW: base.width,
         baseH: base.height,
         renderedScale: 0,
@@ -122,11 +185,29 @@ export const pdfAdapter: DocAdapter = {
       observer.observe(wrap);
     }
 
+    // Analytic page-top offsets, kept in lockstep with the sizes we assign
+    // below — avoids measuring the DOM (getBoundingClientRect) to find them.
+    let pageOffsets: number[] = [];
+    const rebuildOffsets = (): void => {
+      let y = PAGE_GAP;
+      pageOffsets = nodes.map((n) => {
+        const top = y;
+        y += n.baseH * zoom + PAGE_GAP;
+        return top;
+      });
+    };
+    rebuildOffsets();
+
     const applyZoom = (): void => {
       for (const n of nodes) {
         n.wrap.style.width = `${n.baseW * zoom}px`;
         n.wrap.style.height = `${n.baseH * zoom}px`;
+        n.wrap.style.setProperty("--scale-factor", String(scaleFactor(zoom)));
+        // Reposition existing glyph boxes to the new viewport scale.
+        const viewport = n.page.getViewport({ scale: scaleFactor(zoom) });
+        n.textLayer?.update({ viewport });
       }
+      rebuildOffsets();
     };
 
     let settle: number | null = null;
@@ -146,24 +227,21 @@ export const pdfAdapter: DocAdapter = {
     let pageCb: ((page: number) => void) | null = null;
     let pageRaf = 0;
 
+    // Binary search against the cached offsets instead of measuring every
+    // page's position on every scroll frame — O(n) getBoundingClientRect
+    // calls here made jumps across a large document (many hundreds of pages)
+    // visibly janky, since each forces a synchronous layout.
     const computeCurrentPage = (): void => {
-      const rootRect = ctx.container.getBoundingClientRect();
-      let best = currentPage;
-      let bestArea = -1;
-      for (const n of nodes) {
-        const rect = n.wrap.getBoundingClientRect();
-        const top = Math.max(rect.top, rootRect.top);
-        const bottom = Math.min(rect.bottom, rootRect.bottom);
-        const visible = bottom - top;
-        if (visible <= 0) {
-          if (rect.top > rootRect.bottom) break;
-          continue;
-        }
-        if (visible > bestArea) {
-          bestArea = visible;
-          best = n.index + 1;
-        }
+      if (!pageOffsets.length) return;
+      const mid = ctx.container.scrollTop + ctx.container.clientHeight / 2;
+      let lo = 0;
+      let hi = pageOffsets.length - 1;
+      while (lo < hi) {
+        const cand = (lo + hi + 1) >> 1;
+        if (pageOffsets[cand] <= mid) lo = cand;
+        else hi = cand - 1;
       }
+      const best = nodes[lo].index + 1;
       if (best !== currentPage) {
         currentPage = best;
         pageCb?.(best);
@@ -230,12 +308,22 @@ export const pdfAdapter: DocAdapter = {
         settle = window.setTimeout(reRenderVisible, 180);
         return zoom;
       },
+      setTextDebug(level: number) {
+        textDebug = level;
+        for (const n of nodes) {
+          n.wrap.classList.toggle("debug-text", level === 1);
+          n.wrap.classList.toggle("debug-text-full", level === 2);
+        }
+      },
       destroy() {
         destroyed = true;
         observer.disconnect();
         ctx.container.removeEventListener("scroll", onScroll);
         if (pageRaf) cancelAnimationFrame(pageRaf);
-        nodes.forEach((n) => n.task?.cancel());
+        nodes.forEach((n) => {
+          n.task?.cancel();
+          n.textLayer?.cancel();
+        });
         void task.destroy();
         nodes.forEach((n) => n.wrap.remove());
       }

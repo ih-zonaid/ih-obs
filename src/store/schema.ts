@@ -4,6 +4,19 @@ export type RegionKind = "occlusion" | "highlight";
 // (the mark belongs to that segment). One field covers both scopes.
 export const PAGE_OWNER = "page";
 
+// A solid, friendly cover on a book page; a near-black box (the old default)
+// looked like a redaction instead.
+export const DEFAULT_OCCLUSION_COLOR = "#3b82f6";
+
+// Quick-pick swatches offered before falling back to a full color picker.
+export const OCCLUSION_PALETTE: string[] = [
+  "#3b82f6", // blue
+  "#f5c518", // yellow
+  "#22c55e", // green
+  "#f43f5e", // pink
+  "#a78bfa" // purple
+];
+
 export interface Region {
   id: string;
   surface: number;
@@ -16,6 +29,9 @@ export interface Region {
   owner: string;
   label?: string;
   revealed?: boolean;
+  // Marks sharing a groupId (line-tool swipes chained with Shift) reveal and
+  // hide together, as one logical answer split across multiple boxes.
+  groupId?: string;
 }
 
 export type SegmentRole = "concept" | "questions" | "question" | "other";
@@ -80,14 +96,33 @@ export interface SegmentRule {
   minHeightFraction: number;
 }
 
+// A note is a short markdown annotation attached to any anchor: a mark
+// (region), a segment, a marker, a reveal group, or the page itself. Anchoring
+// is by id, so a note survives when the target's geometry changes.
+export type NoteTargetKind = "region" | "segment" | "marker" | "group" | "page";
+
+export interface Note {
+  id: string;
+  target: string;
+  targetKind: NoteTargetKind;
+  body: string;
+  // Snapshot of the text the note was made from, when it came from a selection.
+  quote?: string;
+  // Page the target lives on (region/marker/page notes), for list ordering.
+  page?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Sidecar {
-  version: 4;
+  version: 5;
   doc: string;
   kind: "image" | "pdf" | "markdown" | "json";
   updatedAt: number;
   regions: Region[];
   segments: Segment[];
   markers: Marker[];
+  notes: Note[];
   rule?: SegmentRule;
 }
 
@@ -251,13 +286,14 @@ function asRole(value: unknown): SegmentRole {
 
 export function emptySidecar(doc: string, kind: Sidecar["kind"]): Sidecar {
   return {
-    version: 4,
+    version: 5,
     doc,
     kind,
     updatedAt: Date.now(),
     regions: [],
     segments: [],
-    markers: []
+    markers: [],
+    notes: []
   };
 }
 
@@ -388,10 +424,51 @@ function migrateRegions(raw: unknown): Region[] {
       y: r.y,
       w: r.w,
       h: r.h,
-      color: r.color ?? "#1f2430",
+      color: r.color ?? DEFAULT_OCCLUSION_COLOR,
       owner: typeof r.owner === "string" && r.owner ? r.owner : PAGE_OWNER,
       label: r.label,
-      revealed: r.revealed
+      revealed: r.revealed,
+      groupId: typeof r.groupId === "string" ? r.groupId : undefined
+    });
+  }
+  return out;
+}
+
+function asNoteTargetKind(value: unknown): NoteTargetKind {
+  if (
+    value === "region" ||
+    value === "segment" ||
+    value === "marker" ||
+    value === "group" ||
+    value === "page"
+  ) {
+    return value;
+  }
+  return "page";
+}
+
+// A note is only kept when it has a body and a target id; an empty note is
+// noise the user did not mean to keep.
+function migrateNotes(raw: unknown): Note[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Note[] = [];
+  const seen = new Set<string>();
+  for (const n of raw as Note[]) {
+    if (!n || typeof n !== "object") continue;
+    if (typeof n.target !== "string" || !n.target) continue;
+    if (typeof n.body !== "string" || !n.body.trim()) continue;
+    const id = typeof n.id === "string" && n.id ? n.id : `n_${Math.random().toString(36).slice(2, 9)}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      target: n.target,
+      targetKind: asNoteTargetKind(n.targetKind),
+      body: n.body,
+      quote: typeof n.quote === "string" ? n.quote : undefined,
+      page: typeof n.page === "number" ? n.page : undefined,
+      createdAt: typeof n.createdAt === "number" ? n.createdAt : Date.now(),
+      updatedAt: typeof n.updatedAt === "number" ? n.updatedAt : Date.now()
     });
   }
   return out;
@@ -401,17 +478,18 @@ export function migrate(raw: unknown, doc: string, kind: Sidecar["kind"]): Sidec
   if (!raw || typeof raw !== "object") return emptySidecar(doc, kind);
   const data = raw as Partial<Omit<Sidecar, "version">> & { version?: number };
   const v = data.version;
-  if (v !== 1 && v !== 2 && v !== 3 && v !== 4) return emptySidecar(doc, kind);
+  if (v !== 1 && v !== 2 && v !== 3 && v !== 4 && v !== 5) return emptySidecar(doc, kind);
   const segments = migrateSegments(data.segments);
   const regions = assignOwners(migrateRegions(data.regions), segments);
   return {
-    version: 4,
+    version: 5,
     doc: data.doc ?? doc,
     kind: data.kind ?? kind,
     updatedAt: data.updatedAt ?? Date.now(),
     regions,
     segments,
     markers: migrateMarkers(data.markers),
+    notes: migrateNotes(data.notes),
     rule: data.rule
   };
 }

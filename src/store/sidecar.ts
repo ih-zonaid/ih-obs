@@ -3,6 +3,7 @@ import {
   emptySidecar,
   migrate,
   type Marker,
+  type Note,
   type Region,
   type Segment,
   type SegmentRule,
@@ -60,8 +61,13 @@ export class SidecarStore {
     return this.write(docPath, { ...current, segments, markers, rule: rule ?? current.rule });
   }
 
+  async saveNotes(docPath: string, kind: Sidecar["kind"], notes: Note[]): Promise<Sidecar> {
+    const current = await this.load(docPath, kind);
+    return this.write(docPath, { ...current, notes });
+  }
+
   private async write(docPath: string, model: Omit<Sidecar, "version" | "updatedAt">): Promise<Sidecar> {
-    const next: Sidecar = { ...model, version: 4, updatedAt: Date.now() };
+    const next: Sidecar = { ...model, version: 5, updatedAt: Date.now() };
     const dir = await this.dir();
     await writeText(dir, sidecarName(docPath), JSON.stringify(next, null, 2));
     this.cache.set(docPath, next);

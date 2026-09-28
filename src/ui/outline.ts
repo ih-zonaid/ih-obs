@@ -11,6 +11,9 @@ export interface OutlineHandlers {
   onSplitCancel(): void;
   onPlay(id: string): void;
   onClear(): void;
+  // Opens (or creates) the note for an entry from its row badge.
+  onNote?(id: string, kind: "segment" | "marker", x: number, y: number): void;
+  hasNote?(id: string): boolean;
 }
 
 const TOOLS: DrawTool[] = ["concept", "questions", "question", "marker", "split"];
@@ -210,6 +213,19 @@ export class Outline {
       badge.textContent = `●${n}`;
       badge.title = `${n} mark(s) resolved to this segment`;
       row.appendChild(badge);
+    }
+
+    if (this.handlers.hasNote?.(node.id)) {
+      const note = document.createElement("span");
+      note.className = "outline-note-badge";
+      note.textContent = "✎";
+      note.title = "edit note";
+      note.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+        this.handlers.onNote?.(node.id, node.kind, rect.left, rect.bottom + 4);
+      });
+      row.appendChild(note);
     }
 
     const page = document.createElement("span");

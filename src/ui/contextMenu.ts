@@ -4,6 +4,8 @@ export interface ContextMenuItem {
   danger?: boolean;
   disabled?: boolean;
   hint?: string;
+  // Small colored dot before the label, e.g. for a color quick-pick.
+  swatch?: string;
 }
 
 export type ContextMenuEntry = ContextMenuItem | "separator";
@@ -47,9 +49,18 @@ class ContextMenu {
       const item = document.createElement("button");
       item.className = "ctx-item" + (entry.danger ? " danger" : "");
       item.disabled = !!entry.disabled;
+      const main = document.createElement("span");
+      main.className = "ctx-item-main";
+      if (entry.swatch) {
+        const dot = document.createElement("span");
+        dot.className = "ctx-swatch";
+        dot.style.background = entry.swatch;
+        main.appendChild(dot);
+      }
       const label = document.createElement("span");
       label.textContent = entry.label;
-      item.appendChild(label);
+      main.appendChild(label);
+      item.appendChild(main);
       if (entry.hint) {
         const hint = document.createElement("span");
         hint.className = "ctx-hint";

@@ -5,6 +5,8 @@ export interface SegmentLayerOptions {
   onSelect(id: string, kind: "segment" | "marker"): void;
   onContext(id: string, kind: "segment" | "marker", x: number, y: number): void;
   getActive(): string | null;
+  hasNote?(id: string): boolean;
+  onNoteBadge?(id: string, kind: "segment" | "marker", x: number, y: number): void;
 }
 
 export class SegmentLayer {
@@ -58,17 +60,21 @@ export class SegmentLayer {
     return this.visible;
   }
 
+  // Instant, not smooth: an animated scroll across a large document drags the
+  // viewport through every intervening page, and each one transiently enters
+  // the render-ahead margin and gets rasterized just to be flown past —
+  // expensive for scanned PDFs and a source of visible jank on long jumps.
   scrollTo(id: string): void {
     const seg = this.segments.find((s) => s.id === id);
     if (seg?.spans.length) {
       const el = this.layers.get(seg.spans[0].page)?.querySelector<HTMLElement>(`[data-seg="${id}"]`);
-      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+      el?.scrollIntoView({ block: "center" });
       return;
     }
     const marker = this.markers.find((m) => m.id === id);
     if (!marker) return;
     const el = this.layers.get(marker.page)?.querySelector<HTMLElement>(`[data-marker="${id}"]`);
-    el?.scrollIntoView({ block: "start", behavior: "smooth" });
+    el?.scrollIntoView({ block: "start" });
   }
 
   private size(index: number): { w: number; h: number } {
@@ -104,6 +110,7 @@ export class SegmentLayer {
         tag.className = "seg-tag";
         tag.textContent = seg.label.trim() || seg.role;
         box.appendChild(tag);
+        if (this.options.hasNote?.(seg.id)) box.appendChild(this.noteBadge(seg.id, "segment"));
         box.addEventListener("click", (e) => {
           e.stopPropagation();
           this.options.onSelect(seg.id, "segment");
@@ -129,6 +136,7 @@ export class SegmentLayer {
       tag.className = "seg-marker-tag";
       tag.textContent = marker.label.trim() || "marker";
       line.appendChild(tag);
+      if (this.options.hasNote?.(marker.id)) line.appendChild(this.noteBadge(marker.id, "marker"));
       line.addEventListener("click", (e) => {
         e.stopPropagation();
         this.options.onSelect(marker.id, "marker");
@@ -140,6 +148,19 @@ export class SegmentLayer {
       });
       layer.appendChild(line);
     }
+  }
+
+  private noteBadge(id: string, kind: "segment" | "marker"): HTMLElement {
+    const badge = document.createElement("span");
+    badge.className = "seg-note-badge";
+    badge.textContent = "✎";
+    badge.title = "note — click to open";
+    badge.addEventListener("pointerdown", (e) => e.stopPropagation());
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.options.onNoteBadge?.(id, kind, e.clientX, e.clientY);
+    });
+    return badge;
   }
 
   destroy(): void {

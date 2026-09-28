@@ -14,13 +14,26 @@ export interface ToolbarHandlers {
   onZoomReset(): void;
   onGoToPage(page: number): void;
   onToggleInspect(): void;
+  onToggleLine(): void;
+  onToggleTextDebug(): void;
+  onToggleExplorer(): void;
+  onToggleOutline(): void;
+  onToggleNotes(): void;
 }
+
+// PDF text-layer debug levels: 0 off, 1 outline glyph boxes, 2 also show glyphs.
+export type TextDebugLevel = 0 | 1 | 2;
 
 export class Toolbar {
   private readonly root: HTMLElement;
   private readonly h: ToolbarHandlers;
   private mode: OverlayMode = "none";
   private inspect = false;
+  private line = false;
+  private textDebug: TextDebugLevel = 0;
+  private outlineOn = false;
+  private notesOn = false;
+  private explorerOn = false;
 
   constructor(root: HTMLElement, h: ToolbarHandlers) {
     this.root = root;
@@ -33,6 +46,9 @@ export class Toolbar {
     this.root.innerHTML = "";
 
     const home = this.button("home", () => this.h.onHome(), "go-home");
+    const files = this.button("files", () => this.toggleExplorer());
+    files.title = "toggle the file panel";
+    files.classList.add("tb-explorer-toggle");
 
     const search = document.createElement("button");
     search.className = "tb-btn tb-search";
@@ -81,14 +97,27 @@ export class Toolbar {
 
     const occlude = this.button("occlude", () => this.setMode("occlude"));
     const highlight = this.button("highlight", () => this.setMode("highlight"));
+    const line = this.button("line", () => this.toggleLine());
+    line.title =
+      "line tool: hover to preview a line band (scroll to resize), swipe sideways to stamp it — hold Shift to link with the previous swipe so they reveal together";
     const inspect = this.button("inspect", () => this.toggleInspect());
     const reveal = this.button("reveal", () => this.h.onToggleReveal());
     const hideAll = this.button("hide", () => this.h.onRevealAll(false));
+    const textDebug = this.button("text", () => this.cycleTextDebug());
+    textDebug.title = "debug: show the PDF text layer (off → boxes → text)";
+    textDebug.classList.add("tb-text-debug");
     const save = this.button("save", () => this.h.onSave());
+    const outlineBtn = this.button("outline", () => this.toggleOutline());
+    outlineBtn.title = "toggle the outline panel";
+    outlineBtn.classList.add("tb-outline-toggle");
+    const notesBtn = this.button("notes", () => this.toggleNotes());
+    notesBtn.title = "toggle the notes panel";
+    notesBtn.classList.add("tb-notes-toggle");
     const theme = this.button("theme", () => this.h.onToggleTheme(), "toggle-theme");
 
     this.root.append(
       home,
+      files,
       search,
       vault,
       title,
@@ -97,12 +126,41 @@ export class Toolbar {
       spacer,
       occlude,
       highlight,
+      line,
       inspect,
       reveal,
       hideAll,
+      textDebug,
       save,
+      outlineBtn,
+      notesBtn,
       theme
     );
+  }
+
+  cycleTextDebug(): void {
+    this.textDebug = (((this.textDebug + 1) % 3) as TextDebugLevel);
+    this.setTextDebug(this.textDebug);
+    this.h.onToggleTextDebug();
+  }
+
+  setTextDebug(level: TextDebugLevel): void {
+    this.textDebug = level;
+    const btn = this.root.querySelector<HTMLElement>(".tb-text-debug");
+    if (btn) {
+      btn.classList.toggle("active", level > 0);
+      btn.dataset.level = String(level);
+      btn.textContent = level === 0 ? "text" : level === 1 ? "text ▢" : "text A";
+    }
+  }
+
+  getTextDebug(): TextDebugLevel {
+    return this.textDebug;
+  }
+
+  setTextDebugVisible(visible: boolean): void {
+    this.root.querySelector(".tb-text-debug")?.classList.toggle("hidden", !visible);
+    if (!visible) this.setTextDebug(0);
   }
 
   toggleInspect(): void {
@@ -115,6 +173,50 @@ export class Toolbar {
   setInspect(on: boolean): void {
     this.inspect = on;
     this.root.querySelector<HTMLElement>('[data-action="inspect"]')?.classList.toggle("active", on);
+  }
+
+  toggleLine(): void {
+    this.line = !this.line;
+    this.root.querySelector<HTMLElement>('[data-action="line"]')?.classList.toggle("active", this.line);
+    this.h.onToggleLine();
+  }
+
+  setLine(on: boolean): void {
+    this.line = on;
+    this.root.querySelector<HTMLElement>('[data-action="line"]')?.classList.toggle("active", this.line);
+  }
+
+  toggleOutline(): void {
+    this.outlineOn = !this.outlineOn;
+    this.root.querySelector(".tb-outline-toggle")?.classList.toggle("active", this.outlineOn);
+    this.h.onToggleOutline();
+  }
+
+  setOutline(on: boolean): void {
+    this.outlineOn = on;
+    this.root.querySelector(".tb-outline-toggle")?.classList.toggle("active", on);
+  }
+
+  toggleNotes(): void {
+    this.notesOn = !this.notesOn;
+    this.root.querySelector(".tb-notes-toggle")?.classList.toggle("active", this.notesOn);
+    this.h.onToggleNotes();
+  }
+
+  setNotes(on: boolean): void {
+    this.notesOn = on;
+    this.root.querySelector(".tb-notes-toggle")?.classList.toggle("active", on);
+  }
+
+  toggleExplorer(): void {
+    this.explorerOn = !this.explorerOn;
+    this.root.querySelector(".tb-explorer-toggle")?.classList.toggle("active", this.explorerOn);
+    this.h.onToggleExplorer();
+  }
+
+  setExplorer(on: boolean): void {
+    this.explorerOn = on;
+    this.root.querySelector(".tb-explorer-toggle")?.classList.toggle("active", on);
   }
 
   private pageInput(): HTMLInputElement {

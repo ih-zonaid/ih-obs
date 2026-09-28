@@ -18,6 +18,8 @@ export interface DocView {
   currentPage?(): number;
   goToPage?(page: number): void;
   onPageChange?(cb: (page: number) => void): void;
+  // PDF debugging: reveals the invisible text layer (0 off, 1 boxes, 2 text).
+  setTextDebug?(level: number): void;
   destroy(): void;
 }
 
@@ -33,6 +35,9 @@ export interface LoadContext {
   path: string;
   handle: FileSystemFileHandle;
   container: HTMLElement;
+  // Aborted when a newer openPath() supersedes this load; adapters with
+  // expensive setup (e.g. per-page work) should check it to bail out early.
+  signal: AbortSignal;
 }
 
 export interface DocAdapter {
