@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
-import { copyFileSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 
 const OUT = "dist";
 
@@ -28,6 +28,9 @@ chrome.runtime.onInstalled.addListener(() => {
 }
 
 export default defineConfig({
+  // Relative asset URLs, so one build serves both the extension and a
+  // subpath host (github.io/ih-obs/) without an absolute base.
+  base: "./",
   build: {
     outDir: OUT,
     emptyOutDir: true,
@@ -50,6 +53,8 @@ export default defineConfig({
         writeFileSync(resolve(out, "manifest.json"), JSON.stringify(manifest(), null, 2));
         writeFileSync(resolve(out, "background.js"), worker());
 
+        // app.html loads the same relative URLs as index.html, so it is a
+        // straight copy — no rewriting needed.
         const html = resolve(out, "index.html");
         if (existsSync(html)) copyFileSync(html, resolve(out, "app.html"));
 
@@ -58,12 +63,6 @@ export default defineConfig({
           const emitted = readdirSync(assets).find((f) => f.startsWith("pdf.worker"));
           if (emitted) copyFileSync(resolve(assets, emitted), resolve(out, "pdf.worker.min.mjs"));
         }
-
-        const appHtml = readFileSync(resolve(out, "app.html"), "utf8").replace(
-          /(src|href)="\/assets\//g,
-          '$1="assets/'
-        );
-        writeFileSync(resolve(out, "app.html"), appHtml);
       }
     }
   ]
