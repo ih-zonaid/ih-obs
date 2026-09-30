@@ -19,9 +19,8 @@ export interface NotesPanelHandlers {
 }
 
 const KIND_ICON: Record<NoteTargetKind, string> = {
-  region: "▧",
-  segment: "▤",
-  marker: "▸",
+  mark: "▧",
+  box: "▤",
   group: "▥",
   page: "¶"
 };
@@ -64,7 +63,7 @@ export class NotesPanel {
       hint.className = "notes-hint";
       hint.textContent = this.rows.length
         ? "No notes match your filter."
-        : "No notes yet. Right-click a mark, segment, or the page to add one.";
+        : "No notes yet. Right-click a mark, box, or the page to add one.";
       this.root.appendChild(hint);
       this.root.scrollTop = scroll;
       return;

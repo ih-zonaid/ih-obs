@@ -1,4 +1,4 @@
-import type { Segment, SegmentRole, SegmentRule, Span } from "../store/schema";
+import type { Box, BoxTag, SegmentRule, Span } from "../store/schema";
 import {
   cropBitmap,
   lineBands,
@@ -192,17 +192,18 @@ export interface SegmentedPage {
 export interface ScopedSegment {
   page: number;
   span: Span;
-  role: SegmentRole;
+  role: BoxTag;
   label: string;
 }
 
-export function buildSegments(pages: SegmentedPage[], prefix: string): Segment[] {
-  const segments: Segment[] = [];
+export function buildSegments(pages: SegmentedPage[], prefix: string): Box[] {
+  const segments: Box[] = [];
   for (const pg of pages) {
     for (const span of pg.spans) {
       segments.push({
+        kind: "box",
         id: uid(),
-        role: "question",
+        tags: ["question"],
         label: `${prefix}${segments.length + 1}`,
         spans: [span]
       });
@@ -217,10 +218,10 @@ export function detectInSpan(
   page: PageBitmap,
   region: Span,
   rule: SegmentRule,
-  role: SegmentRole,
+  role: BoxTag,
   prefix: string,
   level = 0
-): Segment[] {
+): Box[] {
   const bmp = page.bitmap;
   const sx = region.x * bmp.width;
   const sy = region.y * bmp.height;
@@ -230,8 +231,9 @@ export function detectInSpan(
   const spans = detectLayout({ page: page.page, bitmap: crop }, rule);
   const head = level > 0 ? `${"#".repeat(Math.min(6, level))} ` : "";
   return spans.map((s, i) => ({
+    kind: "box",
     id: uid(),
-    role,
+    tags: [role],
     label: `${head}${prefix}${i + 1}`,
     spans: [
       {

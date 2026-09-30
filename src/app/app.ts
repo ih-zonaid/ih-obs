@@ -18,22 +18,38 @@ import { SidecarStore } from "../store/sidecar";
 import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
 import { kvGet, kvRemove, kvSet } from "../store/kv";
 import {
+  anchorOf,
+  anchorPage,
+  assignOwners,
   buildOutlineTree,
+  cardCrop,
   DEFAULT_OCCLUSION_COLOR,
   DEFAULT_RULES,
+  containsSpan,
+  frames,
+  isAnchor,
+  isBox,
+  isCard,
+  isContainer,
+  isFrame,
+  isMark,
+  markKind,
+  newMarkId,
+  newBoxId,
   OCCLUSION_PALETTE,
   PAGE_OWNER,
-  assignOwners,
   parseLabel,
-  smallestContainingSegment,
-  type Marker,
+  roleOf,
+  smallestContainingSpan,
+  type Box,
+  type BoxTag,
+  type Card,
+  type Entity,
+  type Mark,
   type Note,
   type NoteTargetKind,
   type OutlineNode,
-  type Region,
-  type RegionKind,
-  type Segment,
-  type SegmentRole,
+  type MarkKind,
   type Span
 } from "../store/schema";
 import { detectInSpan } from "../segment/detect";
@@ -144,11 +160,10 @@ export class App {
   private overlay: Overlay | null = null;
   private segLayer: SegmentLayer | null = null;
   private segDrawer: SegmentDrawer | null = null;
-  private segments: Segment[] = [];
-  private markers: Marker[] = [];
+  private entities: Entity[] = [];
   private notes: Note[] = [];
   private activeId: string | null = null;
-  private activeKind: "segment" | "marker" = "segment";
+  private activeKind: "box" | "mark" = "box";
   private drawTool: DrawTool | null = null;
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
@@ -186,9 +201,27 @@ export class App {
     void this.boot();
   }
 
-  // Right-clicking the page itself (marks/segments stopPropagation) offers a
+  // ---- Entity accessors --------------------------------------------------
+
+  private boxes(): Box[] {
+    return this.entities.filter(isBox);
+  }
+
+  private marks(): Mark[] {
+    return this.entities.filter(isMark);
+  }
+
+  private boxById(id: string): Box | undefined {
+    return this.entities.find((e) => e.id === id && isBox(e)) as Box | undefined;
+  }
+
+  private markById(id: string): Mark | undefined {
+    return this.entities.find((e) => e.id === id && isMark(e)) as Mark | undefined;
+  }
+
+  // Right-clicking the page itself (marks/boxes stopPropagation) offers a
   // selection menu when text is selected, otherwise a page-scoped note.
-  // Suppressed while a mark or segment tool owns the pointer.
+  // Suppressed while a mark or box tool owns the pointer.
   private viewerContext(e: MouseEvent): void {
     if (!this.view || this.view.kind === "json") return;
     if (this.mode !== "none" || this.drawTool) return;
@@ -278,8 +311,8 @@ export class App {
 
     this.outline = new Outline(this.shell.outline, {
       onSelect: (id, kind) => this.selectEntry(id, kind),
-      onLabel: (id, kind, label) => void this.setLabel(id, kind, label),
-      onDelete: (id, kind) => void this.deleteEntry(id, kind),
+      onLabel: (id, label) => void this.setLabel(id, label),
+      onDelete: (id) => void this.deleteEntry(id),
       onTool: (tool) => this.setDrawTool(tool),
       onAutoSegment: () => void this.runSegmentation(),
       onSplitApply: () => void this.applySplit(),
@@ -294,7 +327,9 @@ export class App {
       this.shell.player,
       {
         loadPage: (page, scale) => this.loadPageImage(page, scale),
-        marksFor: (segmentId) => this.marksForSegment(segmentId)
+        // A play item id is a box id for question play and a mark id for card
+        // play; resolve whichever it is.
+        marksFor: (id) => this.marksForPlayerItem(id)
       },
       { onClose: () => undefined }
     );
@@ -671,24 +706,26 @@ export class App {
     if (!this.store || !this.currentPath) return;
     if (view.kind === "json") return;
     const model = await this.store.load(this.currentPath, view.kind);
-    const overlay = new Overlay(view.surfaces, model.regions, {
+    const marks = model.entities.filter(isMark);
+    const boxes = model.entities.filter(isBox);
+    assignOwners(marks, boxes);
+    const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
-      onContext: (id, x, y) => this.openRegionMenu(id, x, y),
+      onContext: (id, x, y) => this.openMarkMenu(id, x, y),
       ownerFor: (geom) => this.resolveOwner(geom),
       ownerLabel: (owner) => this.ownerLabel(owner),
       hasNote: (id) => this.hasNote(id),
-      onNote: (id, x, y) => this.openNoteTarget("region", id, x, y)
+      onNote: (id, x, y) => this.openNoteTarget("mark", id, x, y)
     });
     overlay.setMode(this.mode);
     overlay.setInspect(this.inspect);
     overlay.setLineMode(this.lineMode);
     this.overlay = overlay;
 
-    this.segments = model.segments;
-    this.markers = model.markers;
+    this.entities = model.entities;
     this.notes = model.notes;
     this.activeId = null;
-    this.activeKind = "segment";
+    this.activeKind = "box";
     this.drawTool = null;
     this.segLayer = new SegmentLayer(view.surfaces, {
       onSelect: (id, kind) => this.selectEntry(id, kind),
@@ -697,11 +734,11 @@ export class App {
       hasNote: (id) => this.hasNote(id),
       onNoteBadge: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y)
     });
-    this.segLayer.setData(this.segments, this.markers);
-    this.segLayer.setVisible(this.segments.length > 0 || this.markers.length > 0);
+    this.segLayer.setData(this.entities);
+    this.segLayer.setVisible(this.boxes().length > 0);
     this.segDrawer = new SegmentDrawer(view.surfaces, {
-      onDraw: (span) => void this.addSegmentFromDraw(span),
-      onMarker: (page, y) => void this.addMarker(page, y)
+      onBox: (span) => void this.addBoxFromDraw(span),
+      onAnchor: (page, y) => void this.addAnchor(page, y)
     });
     this.syncInteractivity();
     this.refreshOutline();
@@ -709,40 +746,40 @@ export class App {
     this.updateRailVisibility();
   }
 
-  // Explicit selection wins; otherwise the smallest containing segment owns the
+  // Explicit selection wins; otherwise the smallest containing box owns the
   // mark; otherwise it is a free page-level mark.
-  private resolveOwner(geom: { surface: number; x: number; y: number; w: number; h: number }): string {
-    if (this.activeKind === "segment" && this.activeId) {
-      const seg = this.segments.find((s) => s.id === this.activeId);
-      if (seg) return seg.id;
+  private resolveOwner(geom: Span): string {
+    if (this.activeKind === "box" && this.activeId) {
+      const box = this.boxById(this.activeId);
+      if (box && !isAnchor(box)) return box.id;
     }
-    const contained = smallestContainingSegment(geom, this.segments);
+    const contained = smallestContainingSpan(geom, this.boxes());
     return contained ? contained.id : PAGE_OWNER;
   }
 
-  // Tool-owns-pointer: while a mark tool is active segments go click-through;
-  // while a segment tool is active the mark overlay goes click-through.
+  // Tool-owns-pointer: while a mark tool is active boxes go click-through;
+  // while a box tool is active the mark overlay goes click-through.
   private syncInteractivity(): void {
     const markTool = this.mode !== "none";
-    const segTool = !!this.drawTool;
-    this.overlay?.setInteractive(!segTool);
+    const boxTool = !!this.drawTool;
+    this.overlay?.setInteractive(!boxTool);
     this.segLayer?.setInteractive(!markTool);
   }
 
   private refreshOutline(): void {
     // Counts must be set before render so the badges are drawn in one pass.
     this.outline.setInspect(this.inspect, this.inspect ? this.inspectCounts() : new Map());
-    this.outline.render(this.segments, this.markers);
+    this.outline.render(this.entities);
     this.outline.setActive(this.activeId);
   }
 
-  // Per-segment count of marks the player would resolve to it, so inspect mode
+  // Per-box count of marks the player would resolve to it, so inspect mode
   // reveals questions whose occlusions are owned by a container or the page.
   private inspectCounts(): Map<string, number> {
     const counts = new Map<string, number>();
-    for (const seg of this.segments) {
-      if (seg.role !== "question") continue;
-      counts.set(seg.id, this.marksForSegment(seg.id).length);
+    for (const box of this.boxes()) {
+      if (roleOf(box) !== "question") continue;
+      counts.set(box.id, this.marksForBox(box.id).length);
     }
     return counts;
   }
@@ -829,10 +866,10 @@ export class App {
     this.shell.root.classList.toggle("left-collapsed", this.leftCollapsed);
   }
 
-  private selectEntry(id: string, kind: "segment" | "marker"): void {
+  private selectEntry(id: string, kind: "box" | "mark"): void {
     this.activeId = id;
     this.activeKind = kind;
-    if (kind === "segment") this.segLayer?.setVisible(true);
+    if (kind === "box") this.segLayer?.setVisible(true);
     // Update classes in place; a full re-render here would destroy the row that
     // the user just clicked and swallow the double-click.
     this.outline.setActive(id);
@@ -845,18 +882,22 @@ export class App {
   }
 
   // Right-click menus are spec-driven: add future actions as new entries here.
-  private openEntryMenu(id: string, kind: "segment" | "marker", clientX: number, clientY: number): void {
-    const entry =
-      kind === "marker"
-        ? this.markers.find((m) => m.id === id)
-        : this.segments.find((s) => s.id === id);
+  private openEntryMenu(id: string, kind: "box" | "mark", clientX: number, clientY: number): void {
+    const entry = kind === "mark" ? this.markById(id) : this.boxById(id);
     if (!entry) return;
     this.selectEntry(id, kind);
 
     const items: ContextMenuEntry[] = [];
-    if (kind === "segment") {
-      const seg = entry as Segment;
-      if (seg.role === "questions") {
+    if (kind === "box") {
+      const box = entry as Box;
+      if (isFrame(box)) {
+        items.push({
+          label: "Play cards in frame",
+          hint: "flashcards",
+          onSelect: () => this.openPlayer(box.id)
+        });
+      }
+      if (roleOf(box) === "questions") {
         items.push({
           label: "Auto-segment inside",
           hint: "find questions",
@@ -870,39 +911,38 @@ export class App {
     items.push(...this.noteMenuItems(kind, id, clientX, clientY));
     items.push("separator");
     items.push({
-      label: kind === "marker" ? "Delete marker" : "Delete segment",
+      label: kind === "mark" ? "Delete mark" : isFrame(entry as Box) ? "Delete frame" : "Delete box",
       danger: true,
-      onSelect: () => void this.deleteEntry(id, kind)
+      onSelect: () => void this.deleteEntry(id)
     });
 
     openContextMenu({ title: this.entryTitle(kind, entry), items }, clientX, clientY);
   }
 
-  private openRegionMenu(id: string, clientX: number, clientY: number): void {
-    const region = this.overlay?.getRegions().find((r) => r.id === id);
-    if (!region) return;
-    const kindLabel = region.kind === "highlight" ? "Highlight" : "Occlusion";
-    const ownerSeg =
-      region.owner !== PAGE_OWNER ? this.segments.find((s) => s.id === region.owner) : undefined;
-    const ownerName = ownerSeg ? ownerSeg.label.replace(/^#+\s*/, "") || "segment" : "page";
+  private openMarkMenu(id: string, clientX: number, clientY: number): void {
+    const mark = this.markById(id);
+    if (!mark) return;
+    const kindLabel = markKind(mark) === "highlight" ? "Highlight" : "Occlusion";
+    const ownerBox = mark.owner !== PAGE_OWNER ? this.boxById(mark.owner) : undefined;
+    const ownerName = ownerBox ? this.boxText(ownerBox) : "page";
     const items: ContextMenuEntry[] = [
       {
-        label: region.revealed ? "Hide" : "Reveal",
+        label: mark.revealed ? "Hide" : "Reveal",
         onSelect: () => {
-          this.overlay?.reveal(id, !region.revealed);
+          this.overlay?.reveal(id, !mark.revealed);
           void this.persist();
         }
       },
-      ...this.noteMenuItems("region", id, clientX, clientY),
+      ...this.noteMenuItems("mark", id, clientX, clientY),
       {
-        label: region.kind === "occlusion" ? "Convert to highlight" : "Convert to occlusion",
+        label: markKind(mark) === "occlusion" ? "Convert to highlight" : "Convert to occlusion",
         onSelect: () => {
-          this.overlay?.setKind(id, region.kind === "occlusion" ? "highlight" : "occlusion");
+          this.overlay?.setKind(id, markKind(mark) === "occlusion" ? "highlight" : "occlusion");
           void this.persist();
         }
       }
     ];
-    if (region.kind === "occlusion") {
+    if (markKind(mark) === "occlusion") {
       items.push("separator");
       const names = ["Blue", "Yellow", "Green", "Pink", "Purple"];
       OCCLUSION_PALETTE.forEach((color, i) => {
@@ -917,24 +957,24 @@ export class App {
       });
       items.push({
         label: "Custom color…",
-        onSelect: () => this.pickRegionColor(id, region.color)
+        onSelect: () => this.pickMarkColor(id, mark.color ?? DEFAULT_OCCLUSION_COLOR)
       });
     }
-    // Attach to the selected segment, or detach back to page scope.
-    if (ownerSeg) {
+    // Attach to the selected box, or detach back to page scope.
+    if (ownerBox) {
       items.push({
-        label: `Detach from ${this.ownerLabel(region.owner)}`,
+        label: `Detach from ${this.ownerLabel(mark.owner)}`,
         onSelect: () => {
           this.overlay?.setOwner(id, PAGE_OWNER);
           void this.persist();
           this.refreshOutline();
         }
       });
-    } else if (this.activeKind === "segment" && this.activeId) {
-      const target = this.segments.find((s) => s.id === this.activeId);
+    } else if (this.activeKind === "box" && this.activeId) {
+      const target = this.boxById(this.activeId);
       if (target) {
         items.push({
-          label: `Attach to "${target.label.replace(/^#+\s*/, "") || "segment"}"`,
+          label: `Attach to "${this.boxText(target)}"`,
           onSelect: () => {
             this.overlay?.setOwner(id, target.id);
             void this.persist();
@@ -943,9 +983,10 @@ export class App {
         });
       }
     }
-    // Snap to the smallest containing segment, fixing container/page owners.
-    const container = smallestContainingSegment(region, this.segments);
-    if (container && container.id !== region.owner) {
+    // Snap to the smallest containing box, fixing container/page owners.
+    const span = mark.spans[0];
+    const container = span ? smallestContainingSpan(span, this.boxes()) : null;
+    if (container && container.id !== mark.owner) {
       items.push({
         label: `Snap to containing ${this.ownerLabel(container.id)}`,
         hint: "fix attachment",
@@ -956,6 +997,7 @@ export class App {
         }
       });
     }
+    items.push("separator", ...this.cardMenuItems(mark));
     items.push({
       label: "Remove",
       danger: true,
@@ -967,9 +1009,141 @@ export class App {
     openContextMenu({ title: `${kindLabel} · ${ownerName}`, items }, clientX, clientY);
   }
 
+  // ---- Cards ------------------------------------------------------------
+
+  // A mark becomes a flashcard only when the user says so; there is no
+  // automatic promotion. The `card` object holds explicit box ids: a context
+  // (question side) and a frame (crop clip).
+  private cardMenuItems(mark: Mark): ContextMenuEntry[] {
+    const items: ContextMenuEntry[] = [];
+    if (!mark.card) {
+      items.push({
+        label: "Make card",
+        hint: "flashcard",
+        onSelect: () => {
+          this.setCard(mark.id, {});
+          this.refreshOutline();
+        }
+      });
+      return items;
+    }
+
+    const contextName = mark.card.context ? this.ownerLabel(mark.card.context) : "band (default)";
+    const frameName = mark.card.frame ? this.ownerLabel(mark.card.frame) : "none";
+    items.push({ label: `Card context: ${contextName}`, disabled: true, onSelect: () => undefined });
+    items.push({
+      label: "Clear context",
+      disabled: !mark.card.context,
+      onSelect: () => this.setCardContext(mark.id, null)
+    });
+    const selected = this.selectedBox();
+    if (selected) {
+      items.push({
+        label: `Use selected "${this.boxText(selected)}" as context`,
+        onSelect: () => this.setCardContext(mark.id, selected.id)
+      });
+    }
+
+    items.push({ label: `Card frame: ${frameName}`, disabled: true, onSelect: () => undefined });
+    items.push({
+      label: "Clear frame",
+      disabled: !mark.card.frame,
+      onSelect: () => this.setCardContext(mark.id, undefined)
+    });
+    const frameBoxes = frames(this.boxes());
+    for (const f of frameBoxes) {
+      if (f.id === mark.card.frame) continue;
+      items.push({
+        label: `Frame with "${this.boxText(f)}"`,
+        onSelect: () => this.setCardContext(mark.id, undefined, f.id)
+      });
+    }
+
+    items.push("separator");
+    items.push({
+      label: "Open in play…",
+      hint: "this card",
+      onSelect: () => this.playCards([mark])
+    });
+    items.push({
+      label: "Remove card",
+      danger: true,
+      onSelect: () => this.setCard(mark.id, null)
+    });
+    return items;
+  }
+
+  // The box currently selected in the outline/page, when it is a real
+  // container (never an anchor or a frame).
+  private selectedBox(): Box | null {
+    if (this.activeKind !== "box" || !this.activeId) return null;
+    const box = this.boxById(this.activeId);
+    if (!box || isAnchor(box) || isFrame(box)) return null;
+    return box;
+  }
+
+  // `undefined` leaves an existing card's context alone; `null` clears it.
+  private setCardContext(markId: string, context: string | null | undefined, frame?: string): void {
+    const mark = this.markById(markId);
+    if (!mark) return;
+    const card: Card = { ...(mark.card ?? {}) };
+    if (context === null) delete card.context;
+    else if (context !== undefined) card.context = context;
+    if (frame !== undefined) card.frame = frame;
+    mark.card = card;
+    this.overlay?.repaint();
+    void this.persist();
+    this.refreshOutline();
+  }
+
+  private setCard(markId: string, card: Card | null): void {
+    const mark = this.markById(markId);
+    if (!mark) return;
+    if (card) mark.card = card;
+    else delete mark.card;
+    this.overlay?.repaint();
+    void this.persist();
+    this.refreshOutline();
+  }
+
+  // Plays an explicit list of card marks, cropping each by its derived card
+  // crop. Order is document position (page, then y).
+  private playCards(marks: Mark[]): void {
+    if (!this.view?.getPageImages) {
+      window.alert("Play mode supports PDFs.");
+      return;
+    }
+    const cards = marks.filter(isCard);
+    if (!cards.length) {
+      window.alert("No cards in this scope. Make a mark a card first.");
+      return;
+    }
+    cards.sort((a, b) => {
+      const pa = a.spans[0]?.page ?? 0;
+      const pb = b.spans[0]?.page ?? 0;
+      return pa - pb || (a.spans[0]?.y ?? 0) - (b.spans[0]?.y ?? 0);
+    });
+    const entities = this.allEntities();
+    this.player.start(
+      cards.map((m) => ({
+        id: m.id,
+        label: m.label.replace(/^#+\s*/, "") || "card",
+        span: m.spans[0] ?? null,
+        crop: cardCrop(m, entities)
+      }))
+    );
+  }
+
+  // The full entity list as the app currently sees it, including any marks the
+  // overlay has mutated but not yet synced back into `this.entities`.
+  private allEntities(): Entity[] {
+    if (!this.overlay) return this.entities;
+    return [...this.entities.filter(isBox), ...this.overlay.getMarks()];
+  }
+
   // Native color picker: live-previews on every drag tick, persists once the
   // user commits so dragging the wheel doesn't spam sidecar writes.
-  private pickRegionColor(id: string, current: string): void {
+  private pickMarkColor(id: string, current: string): void {
     const input = document.createElement("input");
     input.type = "color";
     input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : DEFAULT_OCCLUSION_COLOR;
@@ -985,21 +1159,19 @@ export class App {
 
   // ---- Notes ------------------------------------------------------------
 
-  // A selection becomes one region per surface, each a single union box hugging
+  // A selection becomes one mark per surface, each a single union box hugging
   // the selected words. With a word-level OCR text layer this is exactly the
   // phrase box; no grouping is needed.
-  private buildSelectionRegions(captured: CapturedSelection, kind: RegionKind): Region[] {
+  private buildSelectionMarks(captured: CapturedSelection, kind: MarkKind): Mark[] {
     const color = kind === "highlight" ? "#f5c518" : DEFAULT_OCCLUSION_COLOR;
     return captured.hulls.map((h) => ({
-      id: `r_${Math.random().toString(36).slice(2, 9)}`,
-      surface: h.surface,
-      kind,
-      x: h.x,
-      y: h.y,
-      w: h.w,
-      h: h.h,
+      kind: "mark",
+      id: newMarkId(),
+      tags: [kind],
+      label: "",
+      spans: [{ page: h.surface, x: h.x, y: h.y, w: h.w, h: h.h }],
       color,
-      owner: this.resolveOwner(h),
+      owner: this.resolveOwner({ page: h.surface, x: h.x, y: h.y, w: h.w, h: h.h }),
       revealed: false
     }));
   }
@@ -1008,20 +1180,20 @@ export class App {
   // selection, then clears the selection so the new mark is what you see.
   private markFromSelection(
     captured: CapturedSelection,
-    kind: RegionKind,
+    kind: MarkKind,
     withNote: boolean,
     anchor?: { x: number; y: number }
   ): void {
     const overlay = this.overlay;
     if (!overlay || !this.view) return;
-    const regions = this.buildSelectionRegions(captured, kind);
-    for (const r of regions) overlay.getRegions().push(r);
-    overlay.repaint();
+    const marks = this.buildSelectionMarks(captured, kind);
+    for (const m of marks) this.entities.push(m);
+    overlay.setMarks(this.marks());
     document.getSelection()?.removeAllRanges();
     void this.persist();
 
-    if (withNote && regions[0]) {
-      this.openNoteForRegion(regions[0], captured.quote, anchor ?? this.hullAnchor(captured));
+    if (withNote && marks[0]) {
+      this.openNoteForMark(marks[0], captured.quote, anchor ?? this.hullAnchor(captured));
     }
   }
 
@@ -1035,10 +1207,10 @@ export class App {
     return { x: rect.left + (hull.x + hull.w / 2) * rect.width, y: rect.top + (hull.y + hull.h) * rect.height + 6 };
   }
 
-  // Opens the note editor for a freshly made region, prefilling the quote so the
+  // Opens the note editor for a freshly made mark, prefilling the quote so the
   // mark and its note are created together.
-  private openNoteForRegion(region: Region, quote: string, anchor: { x: number; y: number }): void {
-    const anchorInfo = this.noteAnchor("region", region.id);
+  private openNoteForMark(mark: Mark, quote: string, anchor: { x: number; y: number }): void {
+    const anchorInfo = this.noteAnchor("mark", mark.id);
     const existing = this.notes.find((n) => n.target === anchorInfo.target);
     const label = this.noteLabel(anchorInfo.kind, anchorInfo.target);
     const page = this.notePage(anchorInfo.kind, anchorInfo.target);
@@ -1097,12 +1269,12 @@ export class App {
     });
   }
 
-  // A region that belongs to a reveal group carries one note for the whole
+  // A mark that belongs to a reveal group carries one note for the whole
   // group, so a multi-line swipe is annotated once rather than per box.
   private noteAnchor(targetKind: NoteTargetKind, id: string): { target: string; kind: NoteTargetKind } {
-    if (targetKind === "region") {
-      const region = this.overlay?.getRegions().find((r) => r.id === id);
-      if (region?.groupId) return { target: region.groupId, kind: "group" };
+    if (targetKind === "mark") {
+      const mark = this.markById(id);
+      if (mark?.groupId) return { target: mark.groupId, kind: "group" };
     }
     // A page note is scoped to the page you clicked, not the whole document.
     if (targetKind === "page") return { target: `${PAGE_OWNER}:${this.pageIndex()}`, kind: "page" };
@@ -1114,40 +1286,37 @@ export class App {
   }
 
   private hasNote(id: string): boolean {
-    const region = this.overlay?.getRegions().find((r) => r.id === id);
-    if (region?.groupId && this.notes.some((n) => n.target === region.groupId)) return true;
+    const mark = this.markById(id);
+    if (mark?.groupId && this.notes.some((n) => n.target === mark.groupId)) return true;
     return this.notes.some((n) => n.target === id);
   }
 
   private notePage(kind: NoteTargetKind, target: string): number | undefined {
-    if (kind === "region" || kind === "group") {
-      const regions = this.overlay?.getRegions() ?? [];
-      const r =
-        kind === "region" ? regions.find((x) => x.id === target) : regions.find((x) => x.groupId === target);
-      return r?.surface;
+    if (kind === "mark" || kind === "group") {
+      const marks = this.marks();
+      const m =
+        kind === "mark" ? marks.find((x) => x.id === target) : marks.find((x) => x.groupId === target);
+      return m?.spans[0]?.page;
     }
-    if (kind === "marker") return this.markers.find((m) => m.id === target)?.page;
+    if (kind === "box") return this.boxById(target)?.spans[0]?.page;
     if (kind === "page") {
       const n = Number(target.split(":")[1]);
       return Number.isFinite(n) ? n : 0;
     }
-    if (kind === "segment") return this.segments.find((s) => s.id === target)?.spans[0]?.page;
     return undefined;
   }
 
   private noteLabel(kind: NoteTargetKind, target: string): string {
-    if (kind === "region") {
-      const r = this.overlay?.getRegions().find((x) => x.id === target);
-      return r ? (r.kind === "highlight" ? "Highlight" : "Occlusion") : "Mark";
+    if (kind === "mark") {
+      const m = this.markById(target);
+      return m ? (markKind(m) === "highlight" ? "Highlight" : "Occlusion") : "Mark";
     }
     if (kind === "group") return "Mark group";
     if (kind === "page") return "Page";
-    if (kind === "marker") {
-      return this.markers.find((m) => m.id === target)?.label.replace(/^#+\s*/, "").trim() || "Marker";
-    }
-    const seg = this.segments.find((s) => s.id === target);
-    if (!seg) return "Segment";
-    return `${seg.label.replace(/^#+\s*/, "").trim() || seg.role} (${seg.role})`;
+    const box = this.boxById(target);
+    if (!box) return "Box";
+    if (isAnchor(box)) return box.label.replace(/^#+\s*/, "").trim() || "Anchor";
+    return `${this.boxText(box)} (${roleOf(box)})`;
   }
 
   // Opens the editor for an anchor, creating the note on first save. Existing
@@ -1210,7 +1379,7 @@ export class App {
     }
     this.refreshNotes();
     this.overlay?.repaint();
-    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setData(this.entities);
     await this.persistNotes();
   }
 
@@ -1218,7 +1387,7 @@ export class App {
     this.notes = this.notes.filter((n) => n.id !== noteId);
     this.refreshNotes();
     this.overlay?.repaint();
-    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setData(this.entities);
     await this.persistNotes();
   }
 
@@ -1226,27 +1395,23 @@ export class App {
   private focusNote(noteId: string): void {
     const note = this.notes.find((n) => n.id === noteId);
     if (!note) return;
-    if (note.targetKind === "segment") {
-      this.selectEntry(note.target, "segment");
-      this.segLayer?.scrollTo(note.target);
-      return;
-    }
-    if (note.targetKind === "marker") {
-      this.selectEntry(note.target, "marker");
+    if (note.targetKind === "box") {
+      this.selectEntry(note.target, "box");
       this.segLayer?.scrollTo(note.target);
       return;
     }
     if (note.targetKind === "page") {
       this.view?.goToPage?.((note.page ?? 0) + 1);
       return;
-    }    // region / group: scroll the surface the mark sits on to the viewer center.
-    const regions = this.overlay?.getRegions() ?? [];
-    const r =
-      note.targetKind === "region"
-        ? regions.find((x) => x.id === note.target)
-        : regions.find((x) => x.groupId === note.target);
-    if (!r) return;
-    const surface = this.view?.surfaces.find((s) => s.index === r.surface);
+    }    // mark / group: scroll the surface the mark sits on to the viewer center.
+    const marks = this.marks();
+    const m =
+      note.targetKind === "mark"
+        ? marks.find((x) => x.id === note.target)
+        : marks.find((x) => x.groupId === note.target);
+    const page = m?.spans[0]?.page;
+    if (page === undefined) return;
+    const surface = this.view?.surfaces.find((s) => s.index === page);
     surface?.el.scrollIntoView({ block: "center" });
   }
 
@@ -1283,9 +1448,14 @@ export class App {
     ];
   }
 
-  private entryTitle(kind: "segment" | "marker", entry: Segment | Marker): string {
-    const label = entry.label.trim() || (kind === "marker" ? "marker" : "segment");
-    const page = kind === "marker" ? (entry as Marker).page : (entry as Segment).spans[0]?.page ?? 0;
+  // Human-readable box text, used for titles and labels.
+  private boxText(box: Box): string {
+    return box.label.replace(/^#+\s*/, "").trim() || roleOf(box);
+  }
+
+  private entryTitle(kind: "box" | "mark", entry: Box | Mark): string {
+    const label = entry.label.trim() || (kind === "mark" ? "mark" : "box");
+    const page = entry.spans[0]?.page ?? 0;
     return `${label} · p${page + 1}`;
   }
 
@@ -1311,20 +1481,20 @@ export class App {
     this.refreshOutline();
   }
 
-  private selectedContainer(): Segment | null {
-    if (this.activeKind !== "segment" || !this.activeId) return null;
-    const seg = this.segments.find((s) => s.id === this.activeId);
-    return seg && seg.role === "questions" ? seg : null;
+  private selectedContainer(): Box | null {
+    if (this.activeKind !== "box" || !this.activeId) return null;
+    const box = this.boxById(this.activeId);
+    return box && isContainer(box) && roleOf(box) === "questions" ? box : null;
   }
 
-  private armSplit(container: Segment): void {
+  private armSplit(container: Box): void {
     const span = container.spans[0];
     if (!span) return;
     this.segDrawer?.startSplit(span.page, { x: span.x, y: span.y, w: span.w, h: span.h });
   }
 
   // Slices the selected questions container at the user's cut lines into child
-  // 'question' segments, one per band, right after the container in the outline.
+  // 'question' boxes, one per band, right after the container in the outline.
   private async applySplit(): Promise<void> {
     const container = this.selectedContainer();
     const cuts = this.segDrawer?.getCuts() ?? [];
@@ -1342,14 +1512,15 @@ export class App {
     const pageCuts = cuts.filter((c) => c.page === span.page).map((c) => c.y).sort((a, b) => a - b);
     const bounds = [span.y, ...pageCuts, span.y + span.h];
     const baseText = parseLabel(container.label).text || "Q";
-    const children: Segment[] = [];
+    const children: Box[] = [];
     for (let i = 0; i < bounds.length - 1; i++) {
       const top = bounds[i];
       const bottom = bounds[i + 1];
       if (bottom - top < 0.004) continue;
       children.push({
-        id: `s_${Math.random().toString(36).slice(2, 9)}`,
-        role: "question",
+        kind: "box",
+        id: newBoxId(),
+        tags: ["question"],
         label: `${baseText} ${i + 1}`,
         spans: [{ page: span.page, x: span.x, y: top, w: span.w, h: bottom - top }]
       });
@@ -1359,107 +1530,102 @@ export class App {
       return;
     }
 
-    const at = this.segments.indexOf(container);
-    this.segments.splice(at + 1, 0, ...children);
+    const at = this.entities.indexOf(container);
+    this.entities.splice(at + 1, 0, ...children);
     this.setDrawTool(null);
     // Re-home marks now that finer-grained questions exist to contain them.
     this.reassignMarkOwners();
-    this.segLayer?.setData(this.segments, this.markers);
+    this.segLayer?.setData(this.entities);
     this.segLayer?.setVisible(true);
-    this.selectEntry(children[0].id, "segment");
-    await this.persistSegments();
+    this.selectEntry(children[0].id, "box");
+    await this.persistEntities();
   }
 
-  private defaultLabel(role: SegmentRole): string {
-    const n = this.segments.filter((s) => s.role === role).length + 1;
+  private defaultLabel(role: BoxTag): string {
+    const n = this.boxes().filter((b) => roleOf(b) === role).length + 1;
     if (role === "concept") return `Concept ${n}`;
     if (role === "questions") return `Questions ${n}`;
     if (role === "question") return `Q${n}`;
+    if (role === "frame") return `Frame ${n}`;
     return `Item ${n}`;
   }
 
-  private async addSegmentFromDraw(span: Span): Promise<void> {
-    const role: SegmentRole =
-      this.drawTool === "concept" || this.drawTool === "questions" || this.drawTool === "question"
+  private async addBoxFromDraw(span: Span): Promise<void> {
+    const role: BoxTag =
+      this.drawTool === "concept" ||
+      this.drawTool === "questions" ||
+      this.drawTool === "question" ||
+      this.drawTool === "frame"
         ? this.drawTool
         : "concept";
-    const seg: Segment = {
-      id: `s_${Math.random().toString(36).slice(2, 9)}`,
-      role,
+    const box: Box = {
+      kind: "box",
+      id: newBoxId(),
+      tags: [role],
       label: this.defaultLabel(role),
       spans: [span]
     };
-    this.segments.push(seg);
-    this.segLayer?.setData(this.segments, this.markers);
+    this.entities.push(box);
+    this.segLayer?.setData(this.entities);
     this.segLayer?.setVisible(true);
-    this.selectEntry(seg.id, "segment");
+    this.selectEntry(box.id, "box");
     this.outline.beginEditActive();
-    await this.persistSegments();
+    await this.persistEntities();
   }
 
-  private async addMarker(page: number, y: number): Promise<void> {
-    const n = this.markers.filter((m) => m.page === page).length + 1;
-    const marker: Marker = {
-      id: `m_${Math.random().toString(36).slice(2, 9)}`,
-      page,
-      y,
-      label: `Marker ${n}`
-    };
-    this.markers.push(marker);
-    this.segLayer?.setData(this.segments, this.markers);
+  private async addAnchor(page: number, y: number): Promise<void> {
+    const n = this.boxes().filter(isAnchor).filter((b) => anchorPage(b) === page).length + 1;
+    const box = anchorOf(page, y, `Anchor ${n}`);
+    this.entities.push(box);
+    this.segLayer?.setData(this.entities);
     this.segLayer?.setVisible(true);
-    this.selectEntry(marker.id, "marker");
+    this.selectEntry(box.id, "box");
     this.outline.beginEditActive();
-    await this.persistSegments();
+    await this.persistEntities();
   }
 
-  private async setLabel(id: string, kind: "segment" | "marker", label: string): Promise<void> {
-    if (kind === "marker") {
-      const m = this.markers.find((x) => x.id === id);
-      if (!m) return;
-      m.label = label;
-    } else {
-      const s = this.segments.find((x) => x.id === id);
-      if (!s) return;
-      s.label = label;
-    }
-    this.segLayer?.setData(this.segments, this.markers);
+  private async setLabel(id: string, label: string): Promise<void> {
+    const entity = this.entities.find((e) => e.id === id);
+    if (!entity) return;
+    entity.label = label;
+    this.segLayer?.setData(this.entities);
     this.refreshOutline();
-    await this.persistSegments();
+    await this.persistEntities();
   }
 
-  private async deleteEntry(id: string, kind: "segment" | "marker"): Promise<void> {
-    if (kind === "marker") this.markers = this.markers.filter((m) => m.id !== id);
-    else this.segments = this.segments.filter((s) => s.id !== id);
+  private async deleteEntry(id: string): Promise<void> {
+    const entry = this.entities.find((e) => e.id === id);
+    if (!entry) return;
+    this.entities = this.entities.filter((e) => e.id !== id);
     if (this.activeId === id) this.activeId = null;
     // Notes anchored to the deleted entry go with it, so none dangle.
     this.notes = this.notes.filter((n) => n.target !== id);
-    // Marks that were attached to the deleted segment (or nested under it) fall
+    // Marks that were attached to the deleted box (or nested under it) fall
     // back to page scope rather than disappearing or dangling.
-    this.overlay?.reassignOwners(new Set(this.segments.map((s) => s.id)));
-    void this.persist();
-    this.segLayer?.setData(this.segments, this.markers);
+    this.overlay?.setMarks(this.marks());
+    this.overlay?.reassignOwners(new Set(this.boxes().map((b) => b.id)));
+    this.overlay?.repaint();
+    this.segLayer?.setData(this.entities);
     this.refreshOutline();
     this.refreshNotes();
-    this.overlay?.repaint();
-    await this.persistSegments();
+    await this.persistEntities();
     await this.persistNotes();
   }
 
   private async clearAll(): Promise<void> {
-    const total = this.segments.length + this.markers.length;
-    if (total && !window.confirm("Clear all segments and markers in this document?")) return;
-    this.segments = [];
-    this.markers = [];
+    const total = this.boxes().length;
+    if (total && !window.confirm("Clear all boxes and anchors in this document?")) return;
+    this.entities = this.marks();
     this.activeId = null;
-    this.segLayer?.setData([], []);
+    this.segLayer?.setData(this.entities);
     this.refreshOutline();
-    await this.persistSegments();
+    await this.persistEntities();
   }
 
-  private async persistSegments(): Promise<void> {
+  private async persistEntities(): Promise<void> {
     if (!this.store || !this.view || !this.currentPath) return;
-    await this.store.saveSegments(this.currentPath, this.view.kind, this.segments, this.markers);
+    this.syncMarksFromOverlay();
+    await this.store.saveEntities(this.currentPath, this.view.kind, this.entities);
   }
 
   private async loadPageImage(page: number, scale: number): Promise<PageImage | null> {
@@ -1468,10 +1634,10 @@ export class App {
     return images[0] ?? null;
   }
 
-  // Re-homes mark owners against the current segments (after split/auto-segment).
+  // Re-homes mark owners against the current boxes (after split/auto-segment).
   private reassignMarkOwners(): void {
     if (!this.overlay) return;
-    assignOwners(this.overlay.getRegions(), this.segments, true);
+    assignOwners(this.overlay.getMarks(), this.boxes(), true);
     this.overlay.repaint();
   }
 
@@ -1491,62 +1657,91 @@ export class App {
   // Human-readable owner label for inspect mode badges and menus.
   private ownerLabel(owner: string): string {
     if (owner === PAGE_OWNER) return "page";
-    const seg = this.segments.find((s) => s.id === owner);
-    if (!seg) return "orphan";
-    const text = seg.label.replace(/^#+\s*/, "").trim() || seg.role;
-    return `${text} (${seg.role})`;
+    const box = this.boxById(owner);
+    if (!box) return "orphan";
+    return `${this.boxText(box)} (${roleOf(box)})`;
+  }
+
+  // Play-item id → marks to paint. Question play passes a box id (use the
+  // containment rule below); card play passes a mark id (paint just that card,
+  // so a sibling mark sharing the crop does not double-cover it).
+  private marksForPlayerItem(id: string): Mark[] {
+    const mark = this.markById(id);
+    if (mark && isCard(mark)) return [mark];
+    return this.marksForBox(id);
   }
 
   // Marks shown for a question in play mode: those attached to it, plus any
   // mark that geometrically sits inside its box but is not attached to a
   // different question (covers free and container-owned marks).
-  private marksForSegment(segmentId: string): Region[] {
-    const regions = this.overlay?.getRegions() ?? [];
-    const seg = this.segments.find((s) => s.id === segmentId);
-    const span = seg?.spans[0];
-    return regions.filter((r) => {
-      if (r.owner === segmentId) return true;
-      if (!span || r.surface !== span.page) return false;
+  private marksForBox(boxId: string): Mark[] {
+    const box = this.boxById(boxId);
+    const span = box?.spans[0];
+    const marks = this.marks();
+    return marks.filter((m) => {
+      if (m.owner === boxId) return true;
+      const s = m.spans[0];
+      if (!span || !s || s.page !== span.page) return false;
       const inside =
-        r.x >= span.x - 1e-6 &&
-        r.y >= span.y - 1e-6 &&
-        r.x + r.w <= span.x + span.w + 1e-6 &&
-        r.y + r.h <= span.y + span.h + 1e-6;
+        s.x >= span.x - 1e-6 &&
+        s.y >= span.y - 1e-6 &&
+        s.x + s.w <= span.x + span.w + 1e-6 &&
+        s.y + s.h <= span.y + span.h + 1e-6;
       if (!inside) return false;
       // Another question that also contains it is the truer owner.
-      if (r.owner !== PAGE_OWNER) {
-        const owner = this.segments.find((s) => s.id === r.owner);
-        if (owner?.role === "question") return false;
+      if (m.owner !== PAGE_OWNER) {
+        const owner = this.boxById(m.owner);
+        if (owner && roleOf(owner) === "question") return false;
       }
       return true;
     });
   }
 
-  // Opens a one-question-at-a-time player. Scope: the selected questions
-  // container's descendants, or a single selected question, or all questions.
+  // Opens the one-item-at-a-time player. A selected frame plays the cards
+  // inside it; otherwise the scope is the selected questions container's
+  // descendants, a single question, or all questions.
   private openPlayer(id: string): void {
     if (!this.view?.getPageImages) {
       window.alert("Play mode supports PDFs.");
       return;
     }
-    const tree = buildOutlineTree(this.segments, this.markers);
-    const collect = (nodes: OutlineNode[], acc: Segment[]): void => {
+
+    const picked = this.boxById(id);
+    if (picked && isFrame(picked)) {
+      const frameSpan = picked.spans[0];
+      const cards = this.marks().filter((m) => {
+        if (!isCard(m)) return false;
+        if (m.card?.frame) return m.card.frame === picked.id;
+        // No explicit frame: the card belongs to the frame that contains the
+        // mark itself. Testing the derived crop would fail for the default
+        // full-width band, which never fits inside a column frame.
+        return frameSpan ? m.spans.some((s) => containsSpan(picked, s)) : false;
+      });
+      if (!cards.length) {
+        window.alert(`No cards in "${this.boxText(picked)}". Make a mark a card first.`);
+        return;
+      }
+      this.playCards(cards);
+      return;
+    }
+
+    const tree = buildOutlineTree(this.entities);
+    const collect = (nodes: OutlineNode[], acc: Box[]): void => {
       for (const n of nodes) {
-        const seg = n.kind === "segment" ? this.segments.find((s) => s.id === n.id) : undefined;
-        if (seg && seg.role === "question") acc.push(seg);
+        const box = n.kind === "box" ? this.boxById(n.id) : undefined;
+        if (box && roleOf(box) === "question") acc.push(box);
         collect(n.children, acc);
       }
     };
 
-    let scope: Segment[] = [];
-    const picked = this.segments.find((s) => s.id === id);
-    if (picked?.role === "questions") {
+    let scope: Box[] = [];
+    if (picked && roleOf(picked) === "questions") {
       const node = findNode(tree, id);
       collect(node ? node.children : [], scope);
-    } else if (picked?.role === "question") {
+    } else if (picked && roleOf(picked) === "question") {
       scope = [picked];
     } else {
-      scope = this.segments.filter((s) => s.role === "question");
+      scope = this.boxes().filter((b) => roleOf(b) === "question");
     }
 
     scope.sort((a, b) => {
@@ -1577,8 +1772,8 @@ export class App {
       return;
     }
     const container =
-      this.activeKind === "segment"
-        ? this.segments.find((s) => s.id === this.activeId && s.role === "questions")
+      this.activeKind === "box"
+        ? this.boxes().find((s) => s.id === this.activeId && roleOf(s) === "questions")
         : undefined;
     if (!container) {
       window.alert("Select a 'questions' container, then auto-segment.");
@@ -1588,9 +1783,9 @@ export class App {
 
     const rule = DEFAULT_RULES[0];
     const baseText = parseLabel(container.label).text || "Q";
-    const startIndex = this.segments.indexOf(container);
+    const startIndex = this.entities.indexOf(container);
     try {
-      const found: Segment[] = [];
+      const found: Box[] = [];
       for (const region of container.spans) {
         const images = await this.view.getPageImages([region.page], 1.2);
         const img = images[0];
@@ -1609,19 +1804,14 @@ export class App {
         window.alert("No questions detected inside this container. Split it manually.");
         return;
       }
-      this.segments.splice(startIndex + 1, 0, ...found);
+      this.entities.splice(startIndex + 1, 0, ...found);
       this.reassignMarkOwners();
-      this.segLayer?.setData(this.segments, this.markers);
+      this.segLayer?.setData(this.entities);
       this.segLayer?.setVisible(true);
       this.refreshOutline();
-      this.selectEntry(found[0].id, "segment");
-      await this.store.saveSegments(
-        this.currentPath,
-        this.view.kind,
-        this.segments,
-        this.markers,
-        rule
-      );
+      this.selectEntry(found[0].id, "box");
+      await this.store.saveRule(this.currentPath, this.view.kind, rule);
+      await this.persistEntities();
     } catch {
       window.alert("Segmentation failed.");
     }
@@ -1629,7 +1819,16 @@ export class App {
 
   private async persist(): Promise<void> {
     if (!this.store || !this.overlay || !this.view || !this.currentPath) return;
-    await this.store.saveRegions(this.currentPath, this.view.kind, this.overlay.getRegions());
+    this.syncMarksFromOverlay();
+    await this.store.saveEntities(this.currentPath, this.view.kind, this.entities);
+  }
+
+  // The overlay owns the marks array it mutates (push/remove/reveal), while
+  // this.entities also holds boxes. Recompose before any save so removals and
+  // additions inside the overlay are what actually get written.
+  private syncMarksFromOverlay(): void {
+    if (!this.overlay) return;
+    this.entities = [...this.entities.filter(isBox), ...this.overlay.getMarks()];
   }
 
   private teardown(): void {
@@ -1646,8 +1845,7 @@ export class App {
     this.segDrawer = null;
     this.segLayer?.destroy();
     this.segLayer = null;
-    this.segments = [];
-    this.markers = [];
+    this.entities = [];
     this.notes = [];
     this.activeId = null;
     this.drawTool = null;

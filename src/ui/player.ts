@@ -1,15 +1,18 @@
-import type { Region, Span } from "../store/schema";
+import type { Mark, Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
 
 export interface PlayerItem {
   id: string;
   label: string;
   span: Span | null;
+  // Crop rectangle for the card's question side. Defaults to the span when a
+  // caller does not supply a derived crop (questions, frame-scoped cards).
+  crop?: Span | null;
 }
 
 export interface PlayerSource {
   loadPage(page: number, scale: number): Promise<PageImage | null>;
-  marksFor(segmentId: string): Region[];
+  marksFor(boxId: string): Mark[];
 }
 
 export interface PlayerHandlers {
@@ -188,7 +191,7 @@ export class Player {
     }
 
     const token = ++this.renderToken;
-    const span = item.span;
+    const span = item.crop ?? item.span;
     this.baseCanvas = null;
     const image = await this.source.loadPage(span.page, RENDER_SCALE);
     if (token !== this.renderToken || !this.open) return;
@@ -224,7 +227,7 @@ export class Player {
     const canvas = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
     const base = this.baseCanvas;
     if (!item || !item.span || !canvas || !base) return;
-    const span = item.span;
+    const span = item.crop ?? item.span;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -233,19 +236,21 @@ export class Player {
     ctx.drawImage(base, 0, 0);
 
     // In play mode the player drives reveal, ignoring per-mark revealed state.
-    const marks = this.source.marksFor(item.id).filter((m) => m.surface === span.page);
+    const marks = this.source.marksFor(item.id).filter((m) => m.spans[0]?.page === span.page);
     for (const m of marks) {
-      const mx = ((m.x - span.x) / span.w) * canvas.width;
-      const my = ((m.y - span.y) / span.h) * canvas.height;
-      const mw = (m.w / span.w) * canvas.width;
-      const mh = (m.h / span.h) * canvas.height;
-      if (m.kind === "occlusion") {
+      const s = m.spans[0];
+      if (!s) continue;
+      const mx = ((s.x - span.x) / span.w) * canvas.width;
+      const my = ((s.y - span.y) / span.h) * canvas.height;
+      const mw = (s.w / span.w) * canvas.width;
+      const mh = (s.h / span.h) * canvas.height;
+      if (m.tags.includes("highlight")) {
+        ctx.fillStyle = "rgba(245, 197, 24, 0.3)";
+        ctx.fillRect(mx, my, mw, mh);
+      } else {
         // Occlusions cover the answer and clear once revealed.
         if (this.revealed) continue;
         ctx.fillStyle = m.color || "#1f2430";
-        ctx.fillRect(mx, my, mw, mh);
-      } else {
-        ctx.fillStyle = "rgba(245, 197, 24, 0.3)";
         ctx.fillRect(mx, my, mw, mh);
       }
     }

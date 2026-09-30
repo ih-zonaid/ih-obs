@@ -2,10 +2,8 @@ import { ensureDirPath, readText, writeText } from "../vault/fs";
 import {
   emptySidecar,
   migrate,
-  type Marker,
+  type Entity,
   type Note,
-  type Region,
-  type Segment,
   type SegmentRule,
   type Sidecar
 } from "./schema";
@@ -45,20 +43,12 @@ export class SidecarStore {
     return model;
   }
 
-  async saveRegions(docPath: string, kind: Sidecar["kind"], regions: Region[]): Promise<Sidecar> {
+  // One writer for the whole entity array. Marks, boxes, and anchors all live in
+  // a single list, so saving any one of them must write the whole array; keeping
+  // one entry point avoids lost updates across the old split writers.
+  async saveEntities(docPath: string, kind: Sidecar["kind"], entities: Entity[]): Promise<Sidecar> {
     const current = await this.load(docPath, kind);
-    return this.write(docPath, { ...current, regions });
-  }
-
-  async saveSegments(
-    docPath: string,
-    kind: Sidecar["kind"],
-    segments: Segment[],
-    markers: Marker[],
-    rule?: SegmentRule
-  ): Promise<Sidecar> {
-    const current = await this.load(docPath, kind);
-    return this.write(docPath, { ...current, segments, markers, rule: rule ?? current.rule });
+    return this.write(docPath, { ...current, entities });
   }
 
   async saveNotes(docPath: string, kind: Sidecar["kind"], notes: Note[]): Promise<Sidecar> {
@@ -66,8 +56,13 @@ export class SidecarStore {
     return this.write(docPath, { ...current, notes });
   }
 
+  async saveRule(docPath: string, kind: Sidecar["kind"], rule: SegmentRule): Promise<Sidecar> {
+    const current = await this.load(docPath, kind);
+    return this.write(docPath, { ...current, rule });
+  }
+
   private async write(docPath: string, model: Omit<Sidecar, "version" | "updatedAt">): Promise<Sidecar> {
-    const next: Sidecar = { ...model, version: 5, updatedAt: Date.now() };
+    const next: Sidecar = { ...model, version: 6, updatedAt: Date.now() };
     const dir = await this.dir();
     await writeText(dir, sidecarName(docPath), JSON.stringify(next, null, 2));
     this.cache.set(docPath, next);

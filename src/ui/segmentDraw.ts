@@ -1,25 +1,16 @@
 import type { Span } from "../store/schema";
 import type { Surface } from "../adapters/types";
 
-export type DrawTool = "concept" | "questions" | "question" | "marker" | "split";
+export type DrawTool = "concept" | "questions" | "question" | "frame" | "marker" | "split";
 
 export interface SplitCut {
   page: number;
   y: number;
 }
 
-export interface SplitBand {
-  page: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: string;
-}
-
 export interface SegmentDrawerOptions {
-  onDraw(span: Span): void;
-  onMarker(page: number, y: number): void;
+  onBox(span: Span): void;
+  onAnchor(page: number, y: number): void;
 }
 
 interface Drawing {
@@ -121,7 +112,7 @@ export class SegmentDrawer {
     const surface = Number(layer.dataset.surface);
     if (surface !== this.splitPage) return;
     const { y } = this.localPoint(e, layer);
-    const { h } = this.surfaceSize(surface);
+    const { h, w } = this.surfaceSize(surface);
     const bounds = this.splitBounds;
     const top = Math.max(bounds.y * h, Math.min((bounds.y + bounds.h) * h, y));
     let hover = layer.querySelector<HTMLElement>(".split-hover");
@@ -130,8 +121,8 @@ export class SegmentDrawer {
       hover.className = "split-hover";
       layer.appendChild(hover);
     }
-    hover.style.left = `${bounds.x * this.surfaceSize(surface).w}px`;
-    hover.style.width = `${bounds.w * this.surfaceSize(surface).w}px`;
+    hover.style.left = `${bounds.x * w}px`;
+    hover.style.width = `${bounds.w * w}px`;
     hover.style.top = `${top}px`;
   }
 
@@ -176,7 +167,7 @@ export class SegmentDrawer {
 
     if (this.tool === "marker") {
       const { h } = this.surfaceSize(surface);
-      this.options.onMarker(surface, y / h);
+      this.options.onAnchor(surface, y / h);
       return;
     }
 
@@ -231,7 +222,7 @@ export class SegmentDrawer {
     const width = Math.abs(x - d.startX);
     const height = Math.abs(y - d.startY);
     if (width < 4 || height < 4) return;
-    this.options.onDraw({
+    this.options.onBox({
       page: d.surface,
       x: left / w,
       y: top / h,

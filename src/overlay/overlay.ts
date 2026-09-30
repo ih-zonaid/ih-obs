@@ -1,14 +1,24 @@
-import { DEFAULT_OCCLUSION_COLOR, PAGE_OWNER, type Region, type RegionKind } from "../store/schema";
+import {
+  DEFAULT_OCCLUSION_COLOR,
+  HIGHLIGHT_COLOR,
+  PAGE_OWNER,
+  markKind,
+  newMarkId,
+  setMarkKind,
+  type Mark,
+  type MarkKind,
+  type Span
+} from "../store/schema";
 import type { Surface } from "../adapters/types";
 
 export type OverlayMode = "none" | "occlude" | "highlight";
 
 export interface OverlayOptions {
-  onChange(regions: Region[]): void;
+  onChange(marks: Mark[]): void;
   onContext?(id: string, x: number, y: number): void;
   // Resolves the owner for a freshly drawn mark. Explicit selection wins;
   // otherwise the caller falls back to containment, then page.
-  ownerFor(geom: { surface: number; x: number; y: number; w: number; h: number }): string;
+  ownerFor(span: Span): string;
   // Resolves a human label for a mark's owner, used by inspect mode.
   ownerLabel?(owner: string): string;
   // Whether a mark carries a note, so its indicator dot can be drawn.
@@ -17,15 +27,11 @@ export interface OverlayOptions {
   onNote?(id: string, x: number, y: number): void;
 }
 
-function uid(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
 export class Overlay {
   private readonly surfaces: Surface[];
   private readonly options: OverlayOptions;
   private readonly layers = new Map<number, HTMLElement>();
-  private regions: Region[];
+  private marks: Mark[];
   private mode: OverlayMode = "none";
   private inspect = false;
   // Line tool: instead of dragging a rectangle corner-to-corner, a preview
@@ -34,16 +40,16 @@ export class Overlay {
   // line at a time in a scanned book.
   private lineMode = false;
   // Fraction of page height, kept sticky across swipes (and pages/zoom,
-  // since it's normalized the same way Region.h is).
+  // since it's normalized the same way a mark's h is).
   private bandHeight = 0.025;
   private static readonly BAND_MIN = 0.01;
   private static readonly BAND_MAX = 0.3;
   private static readonly BAND_STEP = 0.004;
   private hoverGhost: HTMLElement | null = null;
   private hoverLayer: HTMLElement | null = null;
-  // Id of the last region stamped by the line tool, so a Shift+swipe can
+  // Id of the last mark stamped by the line tool, so a Shift+swipe can
   // join it into the same reveal group.
-  private lastLineRegionId: string | null = null;
+  private lastLineMarkId: string | null = null;
   private drawing: {
     surface: number;
     startX: number;
@@ -59,9 +65,9 @@ export class Overlay {
   private readonly onPointerLeave: () => void;
   private readonly onWheel: (e: WheelEvent) => void;
 
-  constructor(surfaces: Surface[], regions: Region[], options: OverlayOptions) {
+  constructor(surfaces: Surface[], marks: Mark[], options: OverlayOptions) {
     this.surfaces = surfaces;
-    this.regions = regions;
+    this.marks = marks;
     this.options = options;
     this.onPointerDown = (e) => this.pointerDown(e);
     this.onPointerMove = (e) => this.pointerMove(e);
@@ -91,7 +97,7 @@ export class Overlay {
     this.mode = mode;
     if (mode === "none") {
       this.clearHoverGhost();
-      this.lastLineRegionId = null;
+      this.lastLineMarkId = null;
     }
     for (const layer of this.layers.values()) {
       layer.classList.toggle("is-drawing", mode !== "none");
@@ -102,7 +108,7 @@ export class Overlay {
     this.lineMode = on;
     if (!on) {
       this.clearHoverGhost();
-      this.lastLineRegionId = null;
+      this.lastLineMarkId = null;
     }
   }
 
@@ -118,8 +124,8 @@ export class Overlay {
     return this.mode !== "none";
   }
 
-  getRegions(): Region[] {
-    return this.regions;
+  getMarks(): Mark[] {
+    return this.marks;
   }
 
   private layerOf(surface: number): HTMLElement | undefined {
@@ -224,14 +230,14 @@ export class Overlay {
     }
   }
 
-  // Joins a fresh swipe to the group the last line-tool region belongs to
+  // Joins a fresh swipe to the group the last line-tool mark belongs to
   // (creating the group on first use), so multiple swipes for one ragged
   // answer still reveal/hide as a single unit.
   private joinLineGroup(): string | undefined {
-    if (!this.lastLineRegionId) return undefined;
-    const prev = this.regions.find((r) => r.id === this.lastLineRegionId);
+    if (!this.lastLineMarkId) return undefined;
+    const prev = this.marks.find((r) => r.id === this.lastLineMarkId);
     if (!prev) return undefined;
-    if (!prev.groupId) prev.groupId = uid();
+    if (!prev.groupId) prev.groupId = newMarkId();
     return prev.groupId;
   }
 
@@ -268,56 +274,51 @@ export class Overlay {
     }
     if (this.mode === "none") return;
 
-    const region: Region = {
-      id: uid(),
-      surface: d.surface,
-      kind: this.mode === "highlight" ? "highlight" : "occlusion",
-      x: left / w,
-      y: top / h,
-      w: width / w,
-      h: height / h,
-      color: this.mode === "highlight" ? "#f5c518" : DEFAULT_OCCLUSION_COLOR,
-      owner:
-        this.options.ownerFor({
-          surface: d.surface,
-          x: left / w,
-          y: top / h,
-          w: width / w,
-          h: height / h
-        }) || PAGE_OWNER,
+    const nx = left / w;
+    const ny = top / h;
+    const nw = width / w;
+    const nh = height / h;
+    const mark: Mark = {
+      kind: "mark",
+      id: newMarkId(),
+      tags: [this.mode === "highlight" ? "highlight" : "occlusion"],
+      label: "",
+      spans: [{ page: d.surface, x: nx, y: ny, w: nw, h: nh }],
+      color: this.mode === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
+      owner: this.options.ownerFor({ page: d.surface, x: nx, y: ny, w: nw, h: nh }) || PAGE_OWNER,
       revealed: false,
       groupId: this.lineMode && e.shiftKey ? this.joinLineGroup() : undefined
     };
-    this.regions.push(region);
+    this.marks.push(mark);
     if (this.lineMode) {
-      this.lastLineRegionId = region.id;
+      this.lastLineMarkId = mark.id;
       this.hoverMove(layer, e.clientX, e.clientY);
     }
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
   // A mark with a groupId (line-tool swipes chained with Shift) reveals and
   // hides together with the rest of its group, as one logical answer.
   reveal(id: string, revealed = true): void {
-    const r = this.regions.find((x) => x.id === id);
+    const r = this.marks.find((x) => x.id === id);
     if (!r) return;
-    const targets = r.groupId ? this.regions.filter((x) => x.groupId === r.groupId) : [r];
+    const targets = r.groupId ? this.marks.filter((x) => x.groupId === r.groupId) : [r];
     for (const t of targets) t.revealed = revealed;
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
   revealAll(revealed: boolean): void {
-    for (const r of this.regions) r.revealed = revealed;
+    for (const r of this.marks) r.revealed = revealed;
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
-  // Detach marks whose owner segment no longer exists, so free marks survive
+  // Detach marks whose owner box no longer exists, so free marks survive
   // but orphaned attachments fall back to the page.
   reassignOwners(validIds: Set<string>): void {
-    for (const r of this.regions) {
+    for (const r of this.marks) {
       if (r.owner !== PAGE_OWNER && !validIds.has(r.owner)) r.owner = PAGE_OWNER;
     }
     this.paint();
@@ -325,45 +326,45 @@ export class Overlay {
 
   // Flips a mark between occlusion and highlight in place, so a mis-toggled
   // mark can be fixed without deleting and redrawing it.
-  setKind(id: string, kind: RegionKind): void {
-    const r = this.regions.find((x) => x.id === id);
+  setKind(id: string, kind: MarkKind): void {
+    const r = this.marks.find((x) => x.id === id);
     if (!r) return;
-    r.kind = kind;
+    setMarkKind(r, kind);
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
   // silent: true skips onChange (persist) so a live color-picker drag doesn't
   // trigger a sidecar write on every intermediate value.
   setColor(id: string, color: string, opts?: { silent?: boolean }): void {
-    const r = this.regions.find((x) => x.id === id);
+    const r = this.marks.find((x) => x.id === id);
     if (!r) return;
     r.color = color;
     this.paint();
-    if (!opts?.silent) this.options.onChange(this.regions);
+    if (!opts?.silent) this.options.onChange(this.marks);
   }
 
   setOwner(id: string, owner: string): void {
-    const r = this.regions.find((x) => x.id === id);
+    const r = this.marks.find((x) => x.id === id);
     if (!r) return;
     r.owner = owner;
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
   toggleReveal(): void {
-    const anyHidden = this.regions.some((r) => !r.revealed);
+    const anyHidden = this.marks.some((r) => !r.revealed);
     this.revealAll(anyHidden);
   }
 
   remove(id: string): void {
-    this.regions = this.regions.filter((r) => r.id !== id);
+    this.marks = this.marks.filter((r) => r.id !== id);
     this.paint();
-    this.options.onChange(this.regions);
+    this.options.onChange(this.marks);
   }
 
-  setRegions(regions: Region[]): void {
-    this.regions = regions;
+  setMarks(marks: Mark[]): void {
+    this.marks = marks;
     this.paint();
   }
 
@@ -380,21 +381,24 @@ export class Overlay {
     for (const layer of this.layers.values()) {
       layer.querySelectorAll(".ihobs-region:not(.ghost)").forEach((n) => n.remove());
     }
-    for (const r of this.regions) {
-      const layer = this.layerOf(r.surface);
+    for (const r of this.marks) {
+      const span = r.spans[0];
+      if (!span) continue;
+      const layer = this.layerOf(span.page);
       if (!layer) continue;
-      const { w, h } = this.surfaceSize(r.surface);
-      const el = document.createElement("div");
+      const { w, h } = this.surfaceSize(span.page);
+      const inflated = `ihobs-region ${markKind(r)}`;
       const attached = r.owner && r.owner !== PAGE_OWNER;
-      el.className = `ihobs-region ${r.kind}${r.revealed ? " revealed" : ""}${
+      const el = document.createElement("div");
+      el.className = `${inflated}${r.revealed ? " revealed" : ""}${
         attached ? " attached" : ""
       }${this.inspect ? " inspect" : ""}`;
       el.dataset.owner = r.owner;
-      el.style.left = `${r.x * w}px`;
-      el.style.top = `${r.y * h}px`;
-      el.style.width = `${r.w * w}px`;
-      el.style.height = `${r.h * h}px`;
-      el.style.background = r.kind === "occlusion" ? r.color : "transparent";
+      el.style.left = `${span.x * w}px`;
+      el.style.top = `${span.y * h}px`;
+      el.style.width = `${span.w * w}px`;
+      el.style.height = `${span.h * h}px`;
+      el.style.background = markKind(r) === "occlusion" ? r.color ?? DEFAULT_OCCLUSION_COLOR : "transparent";
       el.title = "click to reveal · right-click for options";
       if (this.inspect) {
         const badge = document.createElement("span");

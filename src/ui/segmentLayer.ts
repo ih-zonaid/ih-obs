@@ -1,20 +1,21 @@
-import type { Marker, Segment } from "../store/schema";
+import { isAnchor, isBox, roleOf, type Box, type Entity } from "../store/schema";
 import type { Surface } from "../adapters/types";
 
 export interface SegmentLayerOptions {
-  onSelect(id: string, kind: "segment" | "marker"): void;
-  onContext(id: string, kind: "segment" | "marker", x: number, y: number): void;
+  onSelect(id: string, kind: "box" | "mark"): void;
+  onContext(id: string, kind: "box" | "mark", x: number, y: number): void;
   getActive(): string | null;
   hasNote?(id: string): boolean;
-  onNoteBadge?(id: string, kind: "segment" | "marker", x: number, y: number): void;
+  onNoteBadge?(id: string, kind: "box" | "mark", x: number, y: number): void;
 }
 
+// Renders the structural geometry: container boxes and anchor lines. Marks live
+// in the overlay, so this layer only ever looks at boxes.
 export class SegmentLayer {
   private readonly surfaces: Surface[];
   private readonly options: SegmentLayerOptions;
   private readonly layers = new Map<number, HTMLElement>();
-  private segments: Segment[] = [];
-  private markers: Marker[] = [];
+  private boxes: Box[] = [];
   private visible = false;
 
   constructor(surfaces: Surface[], options: SegmentLayerOptions) {
@@ -34,9 +35,8 @@ export class SegmentLayer {
     }
   }
 
-  setData(segments: Segment[], markers: Marker[]): void {
-    this.segments = segments;
-    this.markers = markers;
+  setData(entities: Entity[]): void {
+    this.boxes = entities.filter(isBox);
     this.paint();
   }
 
@@ -49,7 +49,7 @@ export class SegmentLayer {
   }
 
   // While a mark tool is active, drop pointer events on the whole layer (and
-  // its boxes) so the overlay can draw through segments, including a question.
+  // its boxes) so the overlay can draw through boxes, including a question.
   setInteractive(interactive: boolean): void {
     for (const layer of this.layers.values()) {
       layer.classList.toggle("click-through", !interactive);
@@ -65,16 +65,18 @@ export class SegmentLayer {
   // the render-ahead margin and gets rasterized just to be flown past —
   // expensive for scanned PDFs and a source of visible jank on long jumps.
   scrollTo(id: string): void {
-    const seg = this.segments.find((s) => s.id === id);
-    if (seg?.spans.length) {
-      const el = this.layers.get(seg.spans[0].page)?.querySelector<HTMLElement>(`[data-seg="${id}"]`);
-      el?.scrollIntoView({ block: "center" });
-      return;
+    for (const layer of this.layers.values()) {
+      const box = layer.querySelector<HTMLElement>(`[data-seg="${id}"]`);
+      if (box) {
+        box.scrollIntoView({ block: "center" });
+        return;
+      }
+      const anchor = layer.querySelector<HTMLElement>(`[data-marker="${id}"]`);
+      if (anchor) {
+        anchor.scrollIntoView({ block: "start" });
+        return;
+      }
     }
-    const marker = this.markers.find((m) => m.id === id);
-    if (!marker) return;
-    const el = this.layers.get(marker.page)?.querySelector<HTMLElement>(`[data-marker="${id}"]`);
-    el?.scrollIntoView({ block: "start" });
   }
 
   private size(index: number): { w: number; h: number } {
@@ -94,63 +96,69 @@ export class SegmentLayer {
     if (!this.visible) return;
     const active = this.options.getActive();
 
-    for (const seg of this.segments) {
-      for (const span of seg.spans) {
+    for (const box of this.boxes) {
+      if (isAnchor(box)) {
+        this.paintAnchor(box, active);
+        continue;
+      }
+      for (const span of box.spans) {
         const layer = this.layers.get(span.page);
         if (!layer) continue;
         const { w, h } = this.size(span.page);
-        const box = document.createElement("div");
-        box.className = `seg-box role-${seg.role}` + (seg.id === active ? " active" : "");
-        box.dataset.seg = seg.id;
-        box.style.left = `${span.x * w}px`;
-        box.style.top = `${span.y * h}px`;
-        box.style.width = `${span.w * w}px`;
-        box.style.height = `${span.h * h}px`;
+        const el = document.createElement("div");
+        el.className = `seg-box role-${roleOf(box)}` + (box.id === active ? " active" : "");
+        el.dataset.seg = box.id;
+        el.style.left = `${span.x * w}px`;
+        el.style.top = `${span.y * h}px`;
+        el.style.width = `${span.w * w}px`;
+        el.style.height = `${span.h * h}px`;
         const tag = document.createElement("span");
         tag.className = "seg-tag";
-        tag.textContent = seg.label.trim() || seg.role;
-        box.appendChild(tag);
-        if (this.options.hasNote?.(seg.id)) box.appendChild(this.noteBadge(seg.id, "segment"));
-        box.addEventListener("click", (e) => {
+        tag.textContent = box.label.trim() || roleOf(box);
+        el.appendChild(tag);
+        if (this.options.hasNote?.(box.id)) el.appendChild(this.noteBadge(box.id, "box"));
+        el.addEventListener("click", (e) => {
           e.stopPropagation();
-          this.options.onSelect(seg.id, "segment");
+          this.options.onSelect(box.id, "box");
         });
-        box.addEventListener("contextmenu", (e) => {
+        el.addEventListener("contextmenu", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          this.options.onContext(seg.id, "segment", e.clientX, e.clientY);
+          this.options.onContext(box.id, "box", e.clientX, e.clientY);
         });
-        layer.appendChild(box);
+        layer.appendChild(el);
       }
-    }
-
-    for (const marker of this.markers) {
-      const layer = this.layers.get(marker.page);
-      if (!layer) continue;
-      const { h } = this.size(marker.page);
-      const line = document.createElement("div");
-      line.className = "seg-marker" + (marker.id === active ? " active" : "");
-      line.dataset.marker = marker.id;
-      line.style.top = `${marker.y * h}px`;
-      const tag = document.createElement("span");
-      tag.className = "seg-marker-tag";
-      tag.textContent = marker.label.trim() || "marker";
-      line.appendChild(tag);
-      if (this.options.hasNote?.(marker.id)) line.appendChild(this.noteBadge(marker.id, "marker"));
-      line.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.options.onSelect(marker.id, "marker");
-      });
-      line.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.options.onContext(marker.id, "marker", e.clientX, e.clientY);
-      });
-      layer.appendChild(line);
     }
   }
 
-  private noteBadge(id: string, kind: "segment" | "marker"): HTMLElement {
+  private paintAnchor(box: Box, active: string | null): void {
+    const span = box.spans[0];
+    if (!span) return;
+    const layer = this.layers.get(span.page);
+    if (!layer) return;
+    const { h } = this.size(span.page);
+    const line = document.createElement("div");
+    line.className = "seg-marker" + (box.id === active ? " active" : "");
+    line.dataset.marker = box.id;
+    line.style.top = `${span.y * h}px`;
+    const tag = document.createElement("span");
+    tag.className = "seg-marker-tag";
+    tag.textContent = box.label.trim() || "anchor";
+    line.appendChild(tag);
+    if (this.options.hasNote?.(box.id)) line.appendChild(this.noteBadge(box.id, "box"));
+    line.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.options.onSelect(box.id, "box");
+    });
+    line.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.options.onContext(box.id, "box", e.clientX, e.clientY);
+    });
+    layer.appendChild(line);
+  }
+
+  private noteBadge(id: string, kind: "box" | "mark"): HTMLElement {
     const badge = document.createElement("span");
     badge.className = "seg-note-badge";
     badge.textContent = "✎";

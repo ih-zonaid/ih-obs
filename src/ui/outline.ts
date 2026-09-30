@@ -1,10 +1,12 @@
-import { buildOutlineTree, type Marker, type OutlineNode, type Segment } from "../store/schema";
+import { buildOutlineTree, TAGS, type Entity, type OutlineNode } from "../store/schema";
 import type { DrawTool } from "./segmentDraw";
 
+type BoxTag = "frame" | "concept" | "questions" | "question" | "other";
+
 export interface OutlineHandlers {
-  onSelect(id: string, kind: "segment" | "marker"): void;
-  onLabel(id: string, kind: "segment" | "marker", label: string): void;
-  onDelete(id: string, kind: "segment" | "marker"): void;
+  onSelect(id: string, kind: "box" | "mark"): void;
+  onLabel(id: string, label: string): void;
+  onDelete(id: string): void;
   onTool(tool: DrawTool | null): void;
   onAutoSegment(): void;
   onSplitApply(): void;
@@ -12,11 +14,11 @@ export interface OutlineHandlers {
   onPlay(id: string): void;
   onClear(): void;
   // Opens (or creates) the note for an entry from its row badge.
-  onNote?(id: string, kind: "segment" | "marker", x: number, y: number): void;
+  onNote?(id: string, kind: "box" | "mark", x: number, y: number): void;
   hasNote?(id: string): boolean;
 }
 
-const TOOLS: DrawTool[] = ["concept", "questions", "question", "marker", "split"];
+const TOOLS: DrawTool[] = ["concept", "questions", "question", "frame", "marker", "split"];
 
 export class Outline {
   private readonly root: HTMLElement;
@@ -24,9 +26,8 @@ export class Outline {
   private active: string | null = null;
   private editingId: string | null = null;
   private tool: DrawTool | null = null;
-  private segments: Segment[] = [];
-  private markers: Marker[] = [];
-  private collapsed = new Set<string>();
+  private entities: Entity[] = [];
+  private readonly collapsed = new Set<string>();
   private readonly rows = new Map<string, HTMLElement>();
   private counts = new Map<string, number>();
   private showCounts = false;
@@ -44,12 +45,11 @@ export class Outline {
     this.counts = counts;
   }
 
-  render(segments: Segment[], markers: Marker[]): void {
-    this.segments = segments;
-    this.markers = markers;
+  render(entities: Entity[]): void {
+    this.entities = entities;
     this.rows.clear();
     this.root.innerHTML = "";
-    const tree = buildOutlineTree(this.segments, this.markers);
+    const tree = buildOutlineTree(this.entities);
     this.root.appendChild(this.head(this.countNodes(tree)));
     this.root.appendChild(this.list(tree));
   }
@@ -72,11 +72,11 @@ export class Outline {
     row.appendChild(title);
     const expand = this.btn("expand", "expand all", () => {
       this.collapsed.clear();
-      this.render(this.segments, this.markers);
+      this.render(this.entities);
     });
     const collapse = this.btn("collapse", "collapse all", () => {
       for (const id of this.rows.keys()) this.collapsed.add(id);
-      this.render(this.segments, this.markers);
+      this.render(this.entities);
     });
     const fold = document.createElement("div");
     fold.className = "outline-actions outline-fold";
@@ -89,10 +89,12 @@ export class Outline {
     for (const tool of TOOLS) {
       const title =
         tool === "marker"
-          ? "place a marker line"
+          ? "place an anchor line"
           : tool === "split"
             ? "split the selected questions container"
-            : `draw ${tool}`;
+            : tool === "frame"
+              ? "draw a frame (crop mask)"
+              : `draw ${tool}`;
       const b = this.btn(tool, title, () => this.toggleTool(tool));
       b.dataset.tool = tool;
       b.classList.toggle("active", this.tool === tool);
@@ -108,7 +110,7 @@ export class Outline {
       note.textContent = "click boundaries on the page";
       bar.append(
         note,
-        this.btn("apply", "turn cuts into question segments", () => this.handlers.onSplitApply()),
+        this.btn("apply", "turn cuts into question boxes", () => this.handlers.onSplitApply()),
         this.btn("cancel", "leave split mode", () => this.handlers.onSplitCancel())
       );
       head.appendChild(bar);
@@ -123,7 +125,7 @@ export class Outline {
       this.btn("auto", "auto-segment the selected questions container", () =>
         this.handlers.onAutoSegment()
       ),
-      this.btn("clear", "clear all segments and markers", () => this.handlers.onClear())
+      this.btn("clear", "clear all boxes and anchors", () => this.handlers.onClear())
     );
     head.appendChild(actions);
     return head;
@@ -133,7 +135,7 @@ export class Outline {
     if (!tree.length) {
       const hint = document.createElement("div");
       hint.className = "outline-hint";
-      hint.textContent = "Nothing yet. Pick a tool above, then draw a box or place a marker line.";
+      hint.textContent = "Nothing yet. Pick a tool above, then draw a box or place an anchor line.";
       return hint;
     }
     const list = document.createElement("div");
@@ -149,13 +151,18 @@ export class Outline {
   }
 
   private row(node: OutlineNode): HTMLElement {
+    const isMarker = node.tags.includes(TAGS.anchor);
+    const role = node.tags.find((t): t is BoxTag =>
+      t === "frame" || t === "concept" || t === "questions" || t === "question" || t === "other"
+    );
+
     const row = document.createElement("div");
     row.className = "outline-row";
     row.classList.toggle("active", node.id === this.active);
     row.dataset.id = node.id;
-    row.dataset.kind = node.kind;
-    if (node.kind === "marker") row.classList.add("marker");
-    if (node.role) row.dataset.role = node.role;
+    row.dataset.kind = "box";
+    if (isMarker) row.classList.add("marker");
+    if (role) row.dataset.role = role;
 
     const gutter = document.createElement("div");
     gutter.className = "outline-gutter";
@@ -183,7 +190,7 @@ export class Outline {
 
     const mark = document.createElement("span");
     mark.className = "outline-mark";
-    if (node.kind === "marker") mark.textContent = "▸";
+    if (isMarker) mark.textContent = "▸";
     else if (node.level > 0) mark.textContent = "#".repeat(node.level);
     else mark.textContent = "¶";
     row.appendChild(mark);
@@ -197,7 +204,7 @@ export class Outline {
     const name = document.createElement("span");
     name.className = "outline-name";
     const text = node.text.trim();
-    name.textContent = text || (node.kind === "marker" ? "marker" : "untitled");
+    name.textContent = text || (isMarker ? "anchor" : "untitled");
     name.classList.toggle("untitled", !text);
     name.title = "click to select · double-click to edit";
     name.addEventListener("dblclick", (ev) => {
@@ -206,12 +213,12 @@ export class Outline {
     });
     row.appendChild(name);
 
-    if (this.showCounts && node.kind === "segment") {
+    if (this.showCounts && !isMarker) {
       const n = this.counts.get(node.id) ?? 0;
       const badge = document.createElement("span");
       badge.className = "outline-count" + (n === 0 ? " none" : "");
       badge.textContent = `●${n}`;
-      badge.title = `${n} mark(s) resolved to this segment`;
+      badge.title = `${n} mark(s) resolved to this box`;
       row.appendChild(badge);
     }
 
@@ -223,7 +230,7 @@ export class Outline {
       note.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-        this.handlers.onNote?.(node.id, node.kind, rect.left, rect.bottom + 4);
+        this.handlers.onNote?.(node.id, "box", rect.left, rect.bottom + 4);
       });
       row.appendChild(note);
     }
@@ -236,18 +243,23 @@ export class Outline {
     const del = document.createElement("span");
     del.className = "outline-del";
     del.textContent = "×";
-    del.title = node.kind === "marker" ? "delete marker" : "delete segment";
+    del.title = isMarker ? "delete anchor" : "delete box";
     del.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      this.handlers.onDelete(node.id, node.kind);
+      this.handlers.onDelete(node.id);
     });
     row.appendChild(del);
 
-    if (node.role === "questions" || node.role === "question") {
+    if (role === "questions" || role === "question" || role === "frame") {
       const play = document.createElement("span");
       play.className = "outline-play";
       play.textContent = "▶";
-      play.title = node.role === "questions" ? "play questions inside" : "play this question";
+      play.title =
+        role === "questions"
+          ? "play questions inside"
+          : role === "frame"
+            ? "play cards in this frame"
+            : "play this question";
       play.addEventListener("click", (ev) => {
         ev.stopPropagation();
         this.handlers.onPlay(node.id);
@@ -255,7 +267,7 @@ export class Outline {
       row.insertBefore(play, del);
     }
 
-    row.addEventListener("click", () => this.handlers.onSelect(node.id, node.kind));
+    row.addEventListener("click", () => this.handlers.onSelect(node.id, "box"));
     this.rows.set(node.id, row);
     return row;
   }
@@ -264,7 +276,7 @@ export class Outline {
     if (this.collapsed.has(id)) this.collapsed.delete(id);
     else this.collapsed.add(id);
     const scroll = this.root.scrollTop;
-    this.render(this.segments, this.markers);
+    this.render(this.entities);
     this.root.scrollTop = scroll;
   }
 
@@ -273,7 +285,7 @@ export class Outline {
     const input = document.createElement("input");
     input.className = "outline-edit";
     input.value = node.label;
-    input.placeholder = node.kind === "marker" ? "marker label…" : "label… use ## for headings";
+    input.placeholder = node.tags.includes(TAGS.anchor) ? "anchor label…" : "label… use ## for headings";
     input.spellcheck = false;
 
     let done = false;
@@ -281,8 +293,8 @@ export class Outline {
       if (done) return;
       done = true;
       this.editingId = null;
-      if (save && input.value !== node.label) this.handlers.onLabel(node.id, node.kind, input.value);
-      else this.render(this.segments, this.markers);
+      if (save && input.value !== node.label) this.handlers.onLabel(node.id, input.value);
+      else this.render(this.entities);
     };
     input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
@@ -307,7 +319,7 @@ export class Outline {
   private beginEdit(id: string): void {
     this.editingId = id;
     this.active = id;
-    this.render(this.segments, this.markers);
+    this.render(this.entities);
   }
 
   // Called by the app right after creating an entry so the label can be typed at once.
