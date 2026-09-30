@@ -403,6 +403,12 @@ body {
   pointer-events: auto;
   cursor: crosshair;
 }
+/* Line tool: the vertical ↕ height cursor is generated in JS (overlay.ts,
+   updateCursor) because its height tracks the band. This class remains as a
+   hook for that state. */
+.ihobs-overlay.is-line {
+  cursor: ns-resize;
+}
 /* Tool-owns-pointer: transparent to gestures while another tool is active. */
 .ihobs-overlay.click-through,
 .ihobs-overlay.click-through .ihobs-region { pointer-events: none; }
@@ -441,6 +447,13 @@ body {
   color: #0b0d10;
   border-radius: 3px 3px 0 0;
   pointer-events: none;
+}
+/* An uncommitted line draft: neutral, clearly not an occlusion or highlight
+   yet. Right-click sets the kind; any other tool discards it. */
+.ihobs-region.pending-line {
+  background: var(--accent, #7aa2f7);
+  opacity: 0.3;
+  border: 1px dashed var(--accent, #7aa2f7);
 }
 .ihobs-region.highlight {
   background: rgba(245, 197, 24, 0.28) !important;

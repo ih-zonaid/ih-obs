@@ -12,11 +12,15 @@ import {
 import type { Surface } from "../adapters/types";
 import { icon } from "../ui/icons";
 
-export type OverlayMode = "none" | "occlude" | "highlight";
+export type OverlayMode = "none" | "occlude" | "highlight" | "line";
 
 export interface OverlayOptions {
   onChange(marks: Mark[]): void;
   onContext?(id: string, x: number, y: number): void;
+  // Right-click on an uncommitted line draft. The draft is not a mark until
+  // the caller picks a kind via commitPending(); choosing any other tool
+  // discards it.
+  onPendingContext?(x: number, y: number): void;
   // Resolves the owner for a freshly drawn mark. Explicit selection wins;
   // otherwise the caller falls back to containment, then page.
   ownerFor(span: Span): string;
@@ -36,21 +40,25 @@ export class Overlay {
   private mode: OverlayMode = "none";
   private inspect = false;
   // Line tool: instead of dragging a rectangle corner-to-corner, a preview
-  // band follows the cursor at a fixed (wheel-adjustable) height and a swipe
-  // sets its horizontal extent — built for occluding/highlighting one text
-  // line at a time in a scanned book.
-  private lineMode = false;
+  // band follows the cursor at a fixed height ('[' / ']' to resize) and a
+  // swipe sets its horizontal extent. A swipe produces a *pending* draft, not
+  // a mark — it is written only once the user picks a kind from its
+  // right-click menu (commitPending); any other tool switch discards it.
   // Fraction of page height, kept sticky across swipes (and pages/zoom,
   // since it's normalized the same way a mark's h is).
   private bandHeight = 0.025;
   private static readonly BAND_MIN = 0.01;
   private static readonly BAND_MAX = 0.3;
-  private static readonly BAND_STEP = 0.004;
+  // Per '[' / ']' keypress, as a fraction of page height.
+  private static readonly BAND_STEP = 0.006;
   private hoverGhost: HTMLElement | null = null;
   private hoverLayer: HTMLElement | null = null;
-  // Id of the last mark stamped by the line tool, so a Shift+swipe can
-  // join it into the same reveal group.
-  private lastLineMarkId: string | null = null;
+  // Last pointer position over a layer, so a '[ / ]' resize can redraw the
+  // preview band without waiting for the next pointermove.
+  private lastHover: { layer: HTMLElement; x: number; y: number } | null = null;
+  // The one uncommitted line draft (normalized span) and its live element.
+  // Nothing is persisted until commitPending assigns it a kind.
+  private pending: { span: Span; el: HTMLElement } | null = null;
   private drawing: {
     surface: number;
     startX: number;
@@ -65,6 +73,7 @@ export class Overlay {
   private readonly onPointerUp: (e: PointerEvent) => void;
   private readonly onPointerLeave: () => void;
   private readonly onWheel: (e: WheelEvent) => void;
+  private readonly onKeyDown: (e: KeyboardEvent) => void;
 
   constructor(surfaces: Surface[], marks: Mark[], options: OverlayOptions) {
     this.surfaces = surfaces;
@@ -73,8 +82,13 @@ export class Overlay {
     this.onPointerDown = (e) => this.pointerDown(e);
     this.onPointerMove = (e) => this.pointerMove(e);
     this.onPointerUp = (e) => this.pointerUp(e);
-    this.onPointerLeave = () => this.clearHoverGhost();
-    this.onWheel = (e) => this.wheel(e);
+    this.onPointerLeave = () => {
+      this.lastHover = null;
+      this.clearHoverGhost();
+    };
+    this.onWheel = () => this.wheel();
+    this.onKeyDown = (e) => this.keyDown(e);
+    window.addEventListener("keydown", this.onKeyDown);
     this.mount();
   }
 
@@ -95,22 +109,42 @@ export class Overlay {
   }
 
   setMode(mode: OverlayMode): void {
+    // Any tool change drops an uncommitted line draft: the user moved on
+    // without picking a kind, so it simply vanishes (never written).
+    if (mode !== "line") this.discardPending();
     this.mode = mode;
-    if (mode === "none") {
+    if (mode !== "line") {
+      this.lastHover = null;
       this.clearHoverGhost();
-      this.lastLineMarkId = null;
     }
     for (const layer of this.layers.values()) {
       layer.classList.toggle("is-drawing", mode !== "none");
+      layer.classList.toggle("is-line", mode === "line");
     }
+    this.updateCursor();
   }
 
-  setLineMode(on: boolean): void {
-    this.lineMode = on;
-    if (!on) {
-      this.clearHoverGhost();
-      this.lastLineMarkId = null;
+  // The line tool's cursor is a vertical double-arrow whose height matches the
+  // band, so you can see the line height under the pointer. Built here (not in
+  // CSS) because the height changes with '[' / ']'; the hotspot is the arrow's
+  // center, so the band centers on the pointer.
+  private updateCursor(): void {
+    if (this.mode !== "line") {
+      for (const layer of this.layers.values()) layer.style.cursor = "";
+      return;
     }
+    const first = this.surfaces[0];
+    const pageH = first ? this.surfaceSize(first.index).h : 800;
+    const px = Math.max(16, Math.min(120, Math.round(this.bandHeight * pageH)));
+    const w = 16;
+    const d = `M8 4 V${px - 4} M3 7 L8 2 L13 7 M3 ${px - 7} L8 ${px - 2} L13 ${px - 7}`;
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${px}" viewBox="0 0 ${w} ${px}">` +
+      `<path d="${d}" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` +
+      `<path d="${d}" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` +
+      `</svg>`;
+    const cur = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 ${Math.round(px / 2)}, crosshair`;
+    for (const layer of this.layers.values()) layer.style.cursor = cur;
   }
 
   // While another tool owns the pointer, the whole overlay becomes transparent
@@ -152,13 +186,42 @@ export class Overlay {
     this.hoverLayer = null;
   }
 
+  // Drops the uncommitted line draft (visual only; there is no mark yet).
+  private discardPending(): void {
+    this.pending?.el.remove();
+    this.pending = null;
+  }
+
+  // Turns the pending draft into a real mark of the given kind. Called from
+  // the draft's right-click menu; a no-op if there is no draft.
+  commitPending(kind: MarkKind): void {
+    const p = this.pending;
+    if (!p) return;
+    p.el.remove();
+    this.pending = null;
+    const mark: Mark = {
+      kind: "mark",
+      id: newMarkId(),
+      tags: [kind],
+      label: "",
+      spans: [p.span],
+      color: kind === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
+      owner: this.options.ownerFor(p.span) || PAGE_OWNER,
+      revealed: false
+    };
+    this.marks.push(mark);
+    this.paint();
+    this.options.onChange(this.marks);
+  }
+
   // Live preview band while the line tool is armed but not yet swiping —
   // shows which line height/row you're about to stamp before you commit.
   private hoverMove(layer: HTMLElement, clientX: number, clientY: number): void {
-    if (!this.lineMode || this.mode === "none") {
+    if (this.mode !== "line") {
       this.clearHoverGhost();
       return;
     }
+    this.lastHover = { layer, x: clientX, y: clientY };
     const surface = Number(layer.dataset.surface);
     const { w, h } = this.surfaceSize(surface);
     const { y } = this.localPoint(layer, clientX, clientY);
@@ -177,14 +240,27 @@ export class Overlay {
     this.hoverGhost.style.height = `${bandH}px`;
   }
 
-  // Adjusts the line tool's band height in place, only while it's armed —
-  // otherwise the wheel just scrolls the document as normal.
-  private wheel(e: WheelEvent): void {
-    if (!this.lineMode || this.mode === "none" || this.drawing) return;
+  // The wheel is owned by zoom (ctrl/cmd) and page scroll, so the line band
+  // is resized with '[' / ']' while the tool is armed. Plain scroll still
+  // moves the page; the preview band is dropped on scroll so it cannot linger
+  // over the wrong row, and the next pointermove brings it back.
+  private wheel(): void {
+    if (this.mode !== "line" || this.drawing) return;
+    this.clearHoverGhost();
+  }
+
+  private keyDown(e: KeyboardEvent): void {
+    if (this.mode !== "line") return;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    let step = 0;
+    if (e.key === "[") step = -Overlay.BAND_STEP;
+    else if (e.key === "]") step = Overlay.BAND_STEP;
+    else return;
     e.preventDefault();
-    const step = Overlay.BAND_STEP * (e.deltaY < 0 ? 1 : -1);
     this.bandHeight = Math.min(Overlay.BAND_MAX, Math.max(Overlay.BAND_MIN, this.bandHeight + step));
-    this.hoverMove(e.currentTarget as HTMLElement, e.clientX, e.clientY);
+    this.updateCursor();
+    if (this.lastHover) this.hoverMove(this.lastHover.layer, this.lastHover.x, this.lastHover.y);
   }
 
   private pointerDown(e: PointerEvent): void {
@@ -193,11 +269,13 @@ export class Overlay {
     const layer = e.currentTarget as HTMLElement;
     const surface = Number(layer.dataset.surface);
     const { x, y } = this.localPoint(layer, e.clientX, e.clientY);
+    // A fresh swipe replaces any earlier uncommitted draft.
+    if (this.mode === "line") this.discardPending();
     this.clearHoverGhost();
     const ghost = document.createElement("div");
     ghost.className = `ihobs-region ghost ${this.mode}`;
     layer.appendChild(ghost);
-    if (this.lineMode) {
+    if (this.mode === "line") {
       const { h } = this.surfaceSize(surface);
       const lineHeight = this.bandHeight * h;
       const top = y - lineHeight / 2;
@@ -231,17 +309,6 @@ export class Overlay {
     }
   }
 
-  // Joins a fresh swipe to the group the last line-tool mark belongs to
-  // (creating the group on first use), so multiple swipes for one ragged
-  // answer still reveal/hide as a single unit.
-  private joinLineGroup(): string | undefined {
-    if (!this.lastLineMarkId) return undefined;
-    const prev = this.marks.find((r) => r.id === this.lastLineMarkId);
-    if (!prev) return undefined;
-    if (!prev.groupId) prev.groupId = newMarkId();
-    return prev.groupId;
-  }
-
   private pointerUp(e: PointerEvent): void {
     if (!this.drawing) return;
     const layer = e.currentTarget as HTMLElement;
@@ -270,7 +337,7 @@ export class Overlay {
     }
 
     if (width < 4 || height < 4) {
-      if (this.lineMode) this.hoverMove(layer, e.clientX, e.clientY);
+      if (this.mode === "line") this.hoverMove(layer, e.clientX, e.clientY);
       return;
     }
     if (this.mode === "none") return;
@@ -279,22 +346,42 @@ export class Overlay {
     const ny = top / h;
     const nw = width / w;
     const nh = height / h;
+    const span: Span = { page: d.surface, x: nx, y: ny, w: nw, h: nh };
+
+    if (this.mode === "line") {
+      // A line swipe produces a neutral, uncommitted draft — no tags, no
+      // color, not persisted. The user's right-click picks occlusion vs
+      // highlight (commitPending); any other tool switch discards it.
+      const el = document.createElement("div");
+      el.className = "ihobs-region pending-line";
+      el.style.left = `${nx * w}px`;
+      el.style.top = `${ny * h}px`;
+      el.style.width = `${nw * w}px`;
+      el.style.height = `${nh * h}px`;
+      el.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      el.addEventListener("click", (ev) => ev.stopPropagation());
+      el.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.options.onPendingContext?.(ev.clientX, ev.clientY);
+      });
+      layer.appendChild(el);
+      this.pending = { span, el };
+      this.hoverMove(layer, e.clientX, e.clientY);
+      return;
+    }
+
     const mark: Mark = {
       kind: "mark",
       id: newMarkId(),
       tags: [this.mode === "highlight" ? "highlight" : "occlusion"],
       label: "",
-      spans: [{ page: d.surface, x: nx, y: ny, w: nw, h: nh }],
+      spans: [span],
       color: this.mode === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
-      owner: this.options.ownerFor({ page: d.surface, x: nx, y: ny, w: nw, h: nh }) || PAGE_OWNER,
-      revealed: false,
-      groupId: this.lineMode && e.shiftKey ? this.joinLineGroup() : undefined
+      owner: this.options.ownerFor(span) || PAGE_OWNER,
+      revealed: false
     };
     this.marks.push(mark);
-    if (this.lineMode) {
-      this.lastLineMarkId = mark.id;
-      this.hoverMove(layer, e.clientX, e.clientY);
-    }
     this.paint();
     this.options.onChange(this.marks);
   }
@@ -380,7 +467,8 @@ export class Overlay {
 
   private paint(): void {
     for (const layer of this.layers.values()) {
-      layer.querySelectorAll(".ihobs-region:not(.ghost)").forEach((n) => n.remove());
+      // The pending line draft is a region too; it is not a mark, so leave it.
+      layer.querySelectorAll(".ihobs-region:not(.ghost):not(.pending-line)").forEach((n) => n.remove());
     }
     for (const r of this.marks) {
       const span = r.spans[0];
@@ -438,6 +526,7 @@ export class Overlay {
   }
 
   destroy(): void {
+    window.removeEventListener("keydown", this.onKeyDown);
     for (const layer of this.layers.values()) {
       layer.removeEventListener("pointerdown", this.onPointerDown);
       layer.removeEventListener("pointermove", this.onPointerMove);

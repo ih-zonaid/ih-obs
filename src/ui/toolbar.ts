@@ -15,7 +15,6 @@ export interface ToolbarHandlers {
   onZoomReset(): void;
   onGoToPage(page: number): void;
   onToggleInspect(): void;
-  onToggleLine(): void;
   onToggleTextDebug(): void;
   onToggleExplorer(): void;
   onToggleOutline(): void;
@@ -39,7 +38,6 @@ export class Toolbar {
   private readonly h: ToolbarHandlers;
   private mode: OverlayMode = "none";
   private inspect = false;
-  private line = false;
   private textDebug: TextDebugLevel = 0;
   private outlineOn = false;
   private notesOn = false;
@@ -151,9 +149,9 @@ export class Toolbar {
     );
     const line = this.iconCtrl(
       "line-band",
-      "line tool: hover to preview a line band (scroll to resize), swipe sideways to stamp it — hold Shift to link with the previous swipe so they reveal together",
+      "line tool: swipe sideways to mark a line — [ / ] resizes the band; right-click the line to set it as occlusion or highlight",
       { action: "line", label: "line tool" },
-      () => this.toggleLine()
+      () => this.setMode("line")
     );
     const inspect = this.iconCtrl(
       "target",
@@ -272,7 +270,6 @@ export class Toolbar {
     this.syncMode();
     this.setTextDebug(this.textDebug);
     this.setInspect(this.inspect);
-    this.setLine(this.line);
     this.setOutline(this.outlineOn);
     this.setNotes(this.notesOn);
     this.setExplorer(this.explorerOn);
@@ -396,17 +393,6 @@ export class Toolbar {
     this.root.querySelector<HTMLElement>('[data-action="inspect"]')?.classList.toggle("active", on);
   }
 
-  toggleLine(): void {
-    this.line = !this.line;
-    this.root.querySelector<HTMLElement>('[data-action="line"]')?.classList.toggle("active", this.line);
-    this.h.onToggleLine();
-  }
-
-  setLine(on: boolean): void {
-    this.line = on;
-    this.root.querySelector<HTMLElement>('[data-action="line"]')?.classList.toggle("active", this.line);
-  }
-
   toggleOutline(): void {
     this.outlineOn = !this.outlineOn;
     this.root.querySelector(".tb-outline-toggle")?.classList.toggle("active", this.outlineOn);
@@ -488,7 +474,7 @@ export class Toolbar {
     this.root.querySelectorAll(".tb-btn").forEach((el) => {
       const btn = el as HTMLButtonElement;
       const action = btn.dataset.action;
-      if (action === "occlude" || action === "highlight") {
+      if (action === "occlude" || action === "highlight" || action === "line") {
         btn.classList.toggle("active", action === this.mode);
       }
     });

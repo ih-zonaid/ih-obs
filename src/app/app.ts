@@ -25,6 +25,7 @@ import {
   cardCrop,
   DEFAULT_OCCLUSION_COLOR,
   DEFAULT_RULES,
+  HIGHLIGHT_COLOR,
   containsSpan,
   frames,
   isAnchor,
@@ -169,7 +170,6 @@ export class App {
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
   private inspect = false;
-  private lineMode = false;
   private railOpen = false;
   private railTab: "outline" | "notes" = "outline";
   private leftCollapsed = false;
@@ -366,7 +366,6 @@ export class App {
       onZoomReset: () => this.setZoom(1),
       onGoToPage: (page) => this.view?.goToPage?.(page),
       onToggleInspect: () => this.toggleInspect(),
-      onToggleLine: () => this.toggleLineMode(),
       onToggleTextDebug: () => this.applyTextDebug(),
       onToggleExplorer: () => this.toggleExplorer(),
       onToggleOutline: () => this.toggleRail("outline"),
@@ -713,6 +712,7 @@ export class App {
     const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
+      onPendingContext: (x, y) => this.openPendingLineMenu(x, y),
       ownerFor: (geom) => this.resolveOwner(geom),
       ownerLabel: (owner) => this.ownerLabel(owner),
       hasNote: (id) => this.hasNote(id),
@@ -720,7 +720,6 @@ export class App {
     });
     overlay.setMode(this.mode);
     overlay.setInspect(this.inspect);
-    overlay.setLineMode(this.lineMode);
     this.overlay = overlay;
 
     this.entities = model.entities;
@@ -1655,10 +1654,34 @@ export class App {
     this.refreshOutline();
   }
 
-  private toggleLineMode(): void {
-    this.lineMode = !this.lineMode;
-    this.toolbar.setLine(this.lineMode);
-    this.overlay?.setLineMode(this.lineMode);
+  // Right-click on an uncommitted line draft. Picking a kind commits it to a
+  // real mark; dismissing the menu (or switching tools) discards the draft.
+  private openPendingLineMenu(clientX: number, clientY: number): void {
+    openContextMenu(
+      {
+        title: "Line — choose a kind",
+        items: [
+          {
+            label: "Occlusion",
+            swatch: DEFAULT_OCCLUSION_COLOR,
+            onSelect: () => {
+              this.overlay?.commitPending("occlusion");
+              void this.persist();
+            }
+          },
+          {
+            label: "Highlight",
+            swatch: HIGHLIGHT_COLOR,
+            onSelect: () => {
+              this.overlay?.commitPending("highlight");
+              void this.persist();
+            }
+          }
+        ]
+      },
+      clientX,
+      clientY
+    );
   }
 
   // Human-readable owner label for inspect mode badges and menus.
