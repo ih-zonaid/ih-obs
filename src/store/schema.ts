@@ -34,6 +34,9 @@ export const HIGHLIGHT_COLOR = "#f5c518";
 
 // Anchor line thickness, normalized (≈2px on a ~500px-tall page).
 export const ANCHOR_THICKNESS = 0.004;
+// Smallest span a resize handle may shrink an entity to, so nothing collapses
+// to an unclickable sliver.
+export const MIN_SPAN = 0.006;
 // Vertical padding added above/below a card's band.
 export const CARD_PAD = 0.01;
 
@@ -235,6 +238,33 @@ export function markKind(mark: Mark): MarkKind {
 export function setMarkKind(mark: Mark, kind: MarkKind): void {
   const rest = mark.tags.filter((t) => t !== TAGS.occlusion && t !== TAGS.highlight);
   mark.tags = [...rest, kind];
+}
+
+// ---- Geometry transforms ---------------------------------------------------
+
+// The eight resize handles, named by the compass edge/corner they move.
+export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+// Translate a span by a normalized delta, clamped so it stays on the page.
+export function translateSpan(span: Span, dx: number, dy: number): Span {
+  const x = Math.min(1 - span.w, Math.max(0, span.x + dx));
+  const y = Math.min(1 - span.h, Math.max(0, span.y + dy));
+  return { ...span, x, y };
+}
+
+// Resize a span by dragging one handle. `dx`/`dy` are normalized pointer
+// deltas; only the edges the handle owns move. The span is clamped to the page
+// and to MIN_SPAN so it never inverts or collapses.
+export function resizeSpan(span: Span, handle: Handle, dx: number, dy: number): Span {
+  let x0 = span.x;
+  let y0 = span.y;
+  let x1 = span.x + span.w;
+  let y1 = span.y + span.h;
+  if (handle.includes("w")) x0 = Math.min(x1 - MIN_SPAN, Math.max(0, x0 + dx));
+  if (handle.includes("e")) x1 = Math.max(x0 + MIN_SPAN, Math.min(1, x1 + dx));
+  if (handle.includes("n")) y0 = Math.min(y1 - MIN_SPAN, Math.max(0, y0 + dy));
+  if (handle.includes("s")) y1 = Math.max(y0 + MIN_SPAN, Math.min(1, y1 + dy));
+  return { ...span, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 // Anchor helpers: anchors are boxes whose geometry is a thin full-width line.

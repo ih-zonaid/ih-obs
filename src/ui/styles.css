@@ -898,6 +898,42 @@ body {
 }
 .seg-box.active .seg-tag { background: var(--hl); }
 
+/* Transform frame: the move/resize chrome for the selected entity only. The
+   layer is transparent to clicks; only the frame itself is interactive. */
+.transform-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+.transform-layer.hidden { display: none; }
+.transform-frame {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  outline: 1.5px solid var(--hl);
+  outline-offset: 1px;
+}
+.transform-frame[data-axis="y"] { cursor: ns-resize; }
+.transform-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -5px 0 0 -5px;
+  background: var(--bg, #fff);
+  border: 1.5px solid var(--hl);
+  border-radius: 2px;
+  pointer-events: auto;
+}
+.transform-handle[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.transform-handle[data-h="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.transform-handle[data-h="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.transform-handle[data-h="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.transform-handle[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.transform-handle[data-h="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.transform-handle[data-h="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.transform-handle[data-h="w"] { left: 0; top: 50%; cursor: ew-resize; }
+
 .ctx-menu {
   position: fixed;
   z-index: 100;

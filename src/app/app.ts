@@ -69,6 +69,7 @@ import { Palette } from "../ui/palette";
 import { Player } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
+import { Transform, type TransformTarget } from "../ui/transform";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
 import { ZoomController } from "../ui/zoom";
@@ -162,6 +163,7 @@ export class App {
   private overlay: Overlay | null = null;
   private segLayer: SegmentLayer | null = null;
   private segDrawer: SegmentDrawer | null = null;
+  private transform: Transform | null = null;
   private entities: Entity[] = [];
   private notes: Note[] = [];
   private activeId: string | null = null;
@@ -661,6 +663,7 @@ export class App {
       onRepaint: () => {
         this.overlay?.repaint();
         this.segLayer?.repaint();
+        this.transform?.repaint();
       }
     });
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
@@ -740,10 +743,74 @@ export class App {
       onBox: (span) => void this.addBoxFromDraw(span),
       onAnchor: (page, y) => void this.addAnchor(page, y)
     });
+    this.transform = new Transform(view.surfaces, {
+      getTarget: () => this.transformTarget(),
+      onPreview: (span, origin) => this.transformSpan(this.activeId, span, origin),
+      onCommit: (span, origin) => {
+        this.transformSpan(this.activeId, span, origin);
+        void this.persistEntities();
+      },
+      onCancel: (origin) => this.transformSpan(this.activeId, origin, origin),
+      onClick: () => this.revealActiveMark(),
+      onContext: (x, y) => {
+        if (!this.activeId) return;
+        if (this.activeKind === "mark") this.openMarkMenu(this.activeId, x, y);
+        else this.openEntryMenu(this.activeId, "box", x, y);
+      },
+      onDeselect: () => this.clearSelection()
+    });
     this.syncInteractivity();
     this.refreshOutline();
     this.refreshNotes();
     this.updateRailVisibility();
+  }
+
+  // The entity the transform frame should frame. Only the active entity is
+  // ever framed — nothing appears on its own. Anchors are move-only (their
+  // width is fixed full-page by construction); every other entity gets all
+  // eight handles.
+  private transformTarget(): TransformTarget | null {
+    if (!this.activeId) return null;
+    const span =
+      this.activeKind === "box" ? this.boxById(this.activeId)?.spans[0] : this.markById(this.activeId)?.spans[0];
+    if (!span) return null;
+    if (this.activeKind === "box") {
+      const box = this.boxById(this.activeId);
+      if (box && isAnchor(box)) return { span, handles: [], axis: "y" };
+    }
+    return { span, handles: ["nw", "n", "ne", "e", "se", "s", "sw", "w"] };
+  }
+
+  // Applies a transform result to the active entity. A multi-span entity is
+  // moved by the same delta; resize only ever targets the framed first span.
+  private transformSpan(id: string | null, span: Span, origin: Span): void {
+    const entity = this.entities.find((e) => e.id === id);
+    if (!entity || !entity.spans[0]) return;
+    const dx = span.x - origin.x;
+    const dy = span.y - origin.y;
+    if (dx === 0 && dy === 0 && span.w === origin.w && span.h === origin.h) return;
+    const resized = span.w !== origin.w || span.h !== origin.h;
+    entity.spans[0] = { ...entity.spans[0], ...span };
+    // Sibling spans follow a move; a resize (first span only) leaves them put.
+    for (let i = 1; !resized && i < entity.spans.length; i++) {
+      entity.spans[i] = {
+        ...entity.spans[i],
+        x: Math.min(1 - entity.spans[i].w, Math.max(0, entity.spans[i].x + dx)),
+        y: Math.min(1 - entity.spans[i].h, Math.max(0, entity.spans[i].y + dy))
+      };
+    }
+    this.segLayer?.setData(this.entities);
+    this.overlay?.repaint();
+  }
+
+  // Clicking the selected mark's frame body reveals it, matching a plain mark
+  // click (reveal is the common action; the frame exists for geometry edits).
+  private revealActiveMark(): void {
+    if (this.activeKind !== "mark" || !this.activeId) return;
+    const mark = this.markById(this.activeId);
+    if (!mark) return;
+    // reveal() fires onChange, which persists.
+    this.overlay?.reveal(mark.id, !mark.revealed);
   }
 
   // Explicit selection wins; otherwise the smallest containing box owns the
@@ -764,6 +831,9 @@ export class App {
     const boxTool = !!this.drawTool;
     this.overlay?.setInteractive(!boxTool);
     this.segLayer?.setInteractive(!markTool);
+    // The transform frame is chrome for the selected entity, so it hides
+    // whenever a tool is drawing or placing marks rather than editing.
+    this.transform?.setVisible(!markTool && !boxTool);
   }
 
   private refreshOutline(): void {
@@ -880,11 +950,18 @@ export class App {
     // the user just clicked and swallow the double-click.
     this.outline.setActive(id);
     this.segLayer?.scrollTo(id);
+    this.transform?.repaint();
     if (this.drawTool === "split") {
       const container = this.selectedContainer();
       if (container) this.armSplit(container);
       else this.segDrawer?.resetSplit();
     }
+  }
+
+  private clearSelection(): void {
+    this.activeId = null;
+    this.outline.setActive(null);
+    this.transform?.repaint();
   }
 
   // Right-click menus are spec-driven: add future actions as new entries here.
@@ -932,6 +1009,11 @@ export class App {
     const ownerBox = mark.owner !== PAGE_OWNER ? this.boxById(mark.owner) : undefined;
     const ownerName = ownerBox ? this.boxText(ownerBox) : "page";
     const items: ContextMenuEntry[] = [
+      {
+        label: "Select / transform",
+        hint: "move · resize",
+        onSelect: () => this.selectEntry(id, "mark")
+      },
       {
         label: mark.revealed ? "Hide" : "Reveal",
         onSelect: () => {
@@ -1873,6 +1955,8 @@ export class App {
     this.overlay = null;
     this.segDrawer?.destroy();
     this.segDrawer = null;
+    this.transform?.destroy();
+    this.transform = null;
     this.segLayer?.destroy();
     this.segLayer = null;
     this.entities = [];
