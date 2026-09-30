@@ -1,4 +1,5 @@
 import { renderMarkdown } from "../notes/render";
+import { icon } from "./icons";
 
 export interface NoteEditorOptions {
   title?: string;
@@ -50,10 +51,12 @@ export class NotePopover {
     tabs.className = "note-pop-tabs";
     const writeTab = document.createElement("button");
     writeTab.className = "note-pop-tab active";
-    writeTab.textContent = "Write";
+    writeTab.appendChild(icon("pencil", 12));
+    writeTab.appendChild(textNode("Write"));
     const previewTab = document.createElement("button");
     previewTab.className = "note-pop-tab";
-    previewTab.textContent = "Preview";
+    previewTab.appendChild(icon("eye", 12));
+    previewTab.appendChild(textNode("Preview"));
     tabs.append(writeTab, previewTab);
     el.appendChild(tabs);
 
@@ -78,11 +81,13 @@ export class NotePopover {
     spacer.className = "note-pop-spacer";
     const del = document.createElement("button");
     del.className = "tb-btn note-pop-del";
-    del.textContent = "Delete";
+    del.appendChild(icon("trash", 13));
+    del.appendChild(textNode("Delete"));
     del.hidden = !opts.onDelete;
     const save = document.createElement("button");
     save.className = "tb-btn note-pop-save";
-    save.textContent = "Save";
+    save.appendChild(icon("check", 13));
+    save.appendChild(textNode("Save"));
     foot.append(hint, spacer, del, save);
     el.appendChild(foot);
 
@@ -180,4 +185,8 @@ export function hideNoteEditor(): void {
 
 export function isNoteEditorOpen(): boolean {
   return popover.isOpen();
+}
+
+function textNode(text: string): Text {
+  return document.createTextNode(text);
 }

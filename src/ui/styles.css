@@ -65,23 +65,33 @@ body {
 }
 
 .tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: var(--bg-3);
   color: var(--fg-dim);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
+  line-height: 1;
   cursor: pointer;
 }
 .tb-btn:hover { color: var(--fg); }
 .tb-btn.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 
+/* Inline SVG icons inherit the button's text colour, so hover/active states
+   recolour them for free. */
+.ihobs-icon { display: block; flex: 0 0 auto; }
+
 .tb-title { color: var(--fg-dim); font-size: 12px; margin-left: 8px; }
-.tb-search {
-  color: var(--fg-dim);
-  font-size: 12px;
-  min-width: 130px;
-  text-align: left;
+.tb-search { color: var(--fg-dim); font-size: 12px; }
+.tb-vault-label {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tb-zoombox {
   display: flex;
@@ -91,11 +101,6 @@ body {
 }
 .tb-zoombox.hidden { display: none; }
 .tb-text-debug.hidden { display: none; }
-.tb-icon {
-  padding: 3px 8px;
-  font-size: 13px;
-  line-height: 1;
-}
 .tb-zoom-btn { min-width: 52px; text-align: center; }
 .tb-page {
   display: flex;
@@ -157,6 +162,10 @@ body {
 }
 .rail-tab {
   flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   background: var(--bg-3);
   color: var(--fg-dim);
   border: 1px solid var(--border);
@@ -171,6 +180,9 @@ body {
 .rail-tab.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 .rail-close {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: var(--fg-dim);
@@ -503,6 +515,9 @@ body {
 .hub-badge.warn { color: var(--hl); border-color: #f5c51844; }
 .hub-action {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   color: var(--fg-dim);
   padding: 2px 6px;
@@ -608,7 +623,7 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
 }
-.player-nav { min-width: 90px; }
+.player-nav { min-width: 56px; }
 .player-reveal { min-width: 130px; }
 .player-reveal.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 
@@ -1034,6 +1049,9 @@ body {
 }
 .note-row:hover .note-row-actions { opacity: 1; }
 .note-row-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg-3);
   color: var(--fg-dim);
   border: 1px solid var(--border);
@@ -1107,6 +1125,9 @@ body {
 }
 .note-pop-tabs { display: flex; gap: 4px; margin-bottom: 6px; }
 .note-pop-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: none;
   border: none;
   color: var(--fg-dim);
@@ -1180,6 +1201,8 @@ body {
   position: absolute;
   top: -17px;
   right: -1px;
+  display: inline-flex;
+  align-items: center;
   font-size: 9px;
   line-height: 15px;
   padding: 0 4px;
@@ -1189,3 +1212,106 @@ body {
   cursor: pointer;
 }
 .seg-marker .seg-note-badge { top: -15px; }
+
+/* ---- Responsive toolbar & touch --------------------------------------- */
+
+/* The toolbar row never wraps or clips. Controls keep their intrinsic width so
+   Toolbar.relayout() can detect the overflow and relocate the least important
+   ones into the "more" popover; only the title absorbs slack (ellipsised). */
+.toolbar > * { flex: 0 0 auto; }
+.tb-btn { white-space: nowrap; }
+.tb-title {
+  flex: 0 1 auto;
+  min-width: 96px;
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tb-spacer { flex: 1 1 auto; }
+
+.tb-overflow-btn.hidden { display: none; }
+.tb-overflow {
+  position: fixed;
+  z-index: 90;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 172px;
+  max-width: min(300px, 92vw);
+  max-height: 70vh;
+  max-height: 70dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+}
+.tb-overflow.open { display: flex; }
+.tb-overflow > .tb-btn {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+/* A demoted control keeps its icon but recovers the name it hides inline. */
+.tb-overflow > .tb-btn::after { content: attr(data-label); }
+.tb-overflow > .tb-zoombox { margin-left: 0; }
+
+/* Mobile browser chrome (the URL bar) changes the *visual* viewport; sizing the
+   shell with 100% of the short-lived layout height clips the bottom. dvh tracks
+   the real visible height, and 100% remains the fallback where dvh is unknown. */
+@supports (height: 100dvh) {
+  html, body, #app { height: 100dvh; }
+}
+
+/* Keep the toolbar and drawers clear of notches and the home indicator. */
+.toolbar {
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
+}
+@media (max-width: 900px) {
+  .explorer { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  .rail { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* On wide screens the title has room; on a phone it is the first thing to go so
+   the page and zoom controls always remain reachable. */
+@media (max-width: 560px) {
+  .toolbar {
+    gap: 4px;
+    padding-left: max(6px, env(safe-area-inset-left));
+    padding-right: max(6px, env(safe-area-inset-right));
+  }
+  .tb-title { display: none; }
+}
+
+/* Touch has no hover, so actions that are reveal-on-hover on desktop must be
+   visible (just dimmed) or they are unreachable. */
+@media (hover: none) {
+  .explorer-star { opacity: 0.7; }
+  .note-row-actions { opacity: 1; }
+  .outline-del,
+  .outline-play { opacity: 0.6; }
+  .outline-row.active .outline-del,
+  .outline-row.active .outline-play { opacity: 0.85; }
+}
+
+/* Comfortable tap targets on coarse pointers. */
+@media (pointer: coarse) {
+  .tb-btn { padding: 6px 10px; }
+  .explorer-item { padding-top: 7px; padding-bottom: 7px; }
+  .rail-tab { padding: 7px 8px; }
+  .outline-row { padding-top: 6px; padding-bottom: 6px; }
+  .outline-chevron { width: 22px; }
+  .note-row-btn { padding: 5px 10px; }
+  .tb-btn,
+  .rail-tab,
+  .explorer-item,
+  .outline-row,
+  .outline-btn { -webkit-tap-highlight-color: transparent; }
+}

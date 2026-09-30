@@ -1,7 +1,26 @@
 import { buildOutlineTree, TAGS, type Entity, type OutlineNode } from "../store/schema";
 import type { DrawTool } from "./segmentDraw";
+import { icon, type IconName } from "./icons";
 
 type BoxTag = "frame" | "concept" | "questions" | "question" | "other";
+
+// One glyph per outline control so the header stays compact; the tooltip carries
+// the full name.
+const OUTLINE_ICONS: Record<string, IconName> = {
+  expand: "chevron-up-down",
+  collapse: "chevrons-in",
+  concept: "tag",
+  questions: "list",
+  question: "circle-question",
+  frame: "crop",
+  marker: "anchor-line",
+  split: "scissors",
+  apply: "check",
+  cancel: "x",
+  play: "play",
+  auto: "sparkles",
+  clear: "trash"
+};
 
 export interface OutlineHandlers {
   onSelect(id: string, kind: "box" | "mark"): void;
@@ -225,8 +244,10 @@ export class Outline {
     if (this.handlers.hasNote?.(node.id)) {
       const note = document.createElement("span");
       note.className = "outline-note-badge";
-      note.textContent = "✎";
+      note.appendChild(icon("pencil", 11));
       note.title = "edit note";
+      note.setAttribute("role", "button");
+      note.setAttribute("aria-label", "edit note");
       note.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -242,8 +263,10 @@ export class Outline {
 
     const del = document.createElement("span");
     del.className = "outline-del";
-    del.textContent = "×";
+    del.appendChild(icon("trash", 12));
     del.title = isMarker ? "delete anchor" : "delete box";
+    del.setAttribute("role", "button");
+    del.setAttribute("aria-label", del.title);
     del.addEventListener("click", (ev) => {
       ev.stopPropagation();
       this.handlers.onDelete(node.id);
@@ -253,13 +276,15 @@ export class Outline {
     if (role === "questions" || role === "question" || role === "frame") {
       const play = document.createElement("span");
       play.className = "outline-play";
-      play.textContent = "▶";
+      play.appendChild(icon("play", 11));
       play.title =
         role === "questions"
           ? "play questions inside"
           : role === "frame"
             ? "play cards in this frame"
             : "play this question";
+      play.setAttribute("role", "button");
+      play.setAttribute("aria-label", play.title);
       play.addEventListener("click", (ev) => {
         ev.stopPropagation();
         this.handlers.onPlay(node.id);
@@ -350,8 +375,11 @@ export class Outline {
     const b = document.createElement("button");
     b.className = "tb-btn outline-btn";
     b.dataset.action = kind;
-    b.textContent = kind;
+    const name = OUTLINE_ICONS[kind];
+    if (name) b.appendChild(icon(name, 13));
+    else b.textContent = kind;
     b.title = title;
+    b.setAttribute("aria-label", title);
     b.addEventListener("click", onClick);
     return b;
   }

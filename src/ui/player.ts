@@ -1,5 +1,6 @@
 import type { Mark, Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
+import { icon } from "./icons";
 
 export interface PlayerItem {
   id: string;
@@ -85,8 +86,9 @@ export class Player {
     title.id = "player-title";
     const close = document.createElement("button");
     close.className = "tb-btn player-close";
-    close.textContent = "×";
+    close.appendChild(icon("x", 16));
     close.title = "close (Esc)";
+    close.setAttribute("aria-label", "close");
     close.addEventListener("click", () => this.close());
     head.append(title, close);
 
@@ -101,21 +103,27 @@ export class Player {
     foot.className = "player-foot";
     const prev = document.createElement("button");
     prev.className = "tb-btn player-nav";
-    prev.textContent = "‹ prev";
+    prev.appendChild(icon("chevron-left", 16));
     prev.title = "previous (←)";
+    prev.setAttribute("aria-label", "previous");
     prev.addEventListener("click", () => this.step(-1));
 
     const reveal = document.createElement("button");
     reveal.className = "tb-btn player-reveal";
     reveal.id = "player-reveal";
-    reveal.textContent = "show answer";
     reveal.title = "show/hide answer (space)";
+    reveal.appendChild(icon("eye", 15));
+    const revealLabel = document.createElement("span");
+    revealLabel.id = "player-reveal-label";
+    revealLabel.textContent = "show answer";
+    reveal.appendChild(revealLabel);
     reveal.addEventListener("click", () => this.toggleReveal());
 
     const next = document.createElement("button");
     next.className = "tb-btn player-nav";
-    next.textContent = "next ›";
+    next.appendChild(icon("chevron-right", 16));
     next.title = "next (→)";
+    next.setAttribute("aria-label", "next");
     next.addEventListener("click", () => this.step(1));
 
     foot.append(prev, reveal, next);
@@ -163,7 +171,14 @@ export class Player {
     const reveal = this.root.querySelector<HTMLElement>("#player-reveal");
     if (reveal) {
       reveal.classList.toggle("on", this.revealed);
-      reveal.textContent = this.revealed ? "hide answer" : "show answer";
+      // Swap the glyph and the label together; the button (and its handler)
+      // persists, only its contents are rebuilt.
+      reveal.textContent = "";
+      reveal.appendChild(icon(this.revealed ? "eye-off" : "eye", 15));
+      const label = document.createElement("span");
+      label.id = "player-reveal-label";
+      label.textContent = this.revealed ? "hide answer" : "show answer";
+      reveal.appendChild(label);
     }
   }
 

@@ -1,4 +1,5 @@
 import type { VaultRecord } from "../host/idb";
+import { icon, type IconName } from "./icons";
 
 export interface VaultHubHandlers {
   onOpen(id: string): void;
@@ -35,7 +36,11 @@ export class VaultHub {
     title.textContent = "Vaults";
     const add = document.createElement("button");
     add.className = "tb-btn";
-    add.textContent = "+ add vault";
+    add.appendChild(icon("plus", 14));
+    const addLabel = document.createElement("span");
+    addLabel.textContent = "add vault";
+    add.appendChild(addLabel);
+    add.title = "add a folder as a vault";
     add.addEventListener("click", () => this.handlers.onAdd());
     head.append(title, add);
     wrap.appendChild(head);
@@ -80,11 +85,11 @@ export class VaultHub {
     row.appendChild(when);
 
     row.append(
-      this.action("rename", (e) => {
+      this.action("pencil", "rename vault", (e) => {
         e.stopPropagation();
         this.handlers.onRename(v.id);
       }),
-      this.action("forget", (e) => {
+      this.action("trash", "forget vault", (e) => {
         e.stopPropagation();
         this.handlers.onForget(v.id);
       })
@@ -92,10 +97,13 @@ export class VaultHub {
     return row;
   }
 
-  private action(label: string, onClick: (e: MouseEvent) => void): HTMLElement {
+  private action(name: IconName, title: string, onClick: (e: MouseEvent) => void): HTMLElement {
     const el = document.createElement("span");
     el.className = "hub-action";
-    el.textContent = label;
+    el.appendChild(icon(name, 14));
+    el.title = title;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", title);
     el.addEventListener("click", onClick);
     return el;
   }

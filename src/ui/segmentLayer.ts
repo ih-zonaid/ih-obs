@@ -1,5 +1,6 @@
 import { isAnchor, isBox, roleOf, type Box, type Entity } from "../store/schema";
 import type { Surface } from "../adapters/types";
+import { icon } from "./icons";
 
 export interface SegmentLayerOptions {
   onSelect(id: string, kind: "box" | "mark"): void;
@@ -161,7 +162,7 @@ export class SegmentLayer {
   private noteBadge(id: string, kind: "box" | "mark"): HTMLElement {
     const badge = document.createElement("span");
     badge.className = "seg-note-badge";
-    badge.textContent = "✎";
+    badge.appendChild(icon("pencil", 9));
     badge.title = "note — click to open";
     badge.addEventListener("pointerdown", (e) => e.stopPropagation());
     badge.addEventListener("click", (e) => {

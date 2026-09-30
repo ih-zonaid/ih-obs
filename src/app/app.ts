@@ -60,6 +60,7 @@ import { splitPath } from "../vault/types";
 import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
+import { icon } from "../ui/icons";
 import { Outline } from "../ui/outline";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
 import { openNoteEditor } from "../ui/notePopover";
@@ -814,10 +815,15 @@ export class App {
 
   private renderRailTabs(outlineSupported: boolean): void {
     this.shell.railTabs.innerHTML = "";
-    const tab = (kind: "outline" | "notes", label: string): HTMLButtonElement => {
+    const tab = (kind: "outline" | "notes", label: string, iconName: "list" | "note"): HTMLButtonElement => {
       const b = document.createElement("button");
       b.className = "rail-tab" + (this.railTab === kind ? " active" : "");
-      b.textContent = label;
+      b.appendChild(icon(iconName, 13));
+      const text = document.createElement("span");
+      text.textContent = label;
+      b.appendChild(text);
+      b.title = `show the ${label.toLowerCase()} panel`;
+      b.setAttribute("aria-label", b.title);
       b.addEventListener("click", () => {
         this.railTab = kind;
         this.railOpen = true;
@@ -826,14 +832,15 @@ export class App {
       });
       return b;
     };
-    if (outlineSupported) this.shell.railTabs.appendChild(tab("outline", "Outline"));
-    this.shell.railTabs.appendChild(tab("notes", "Notes"));
+    if (outlineSupported) this.shell.railTabs.appendChild(tab("outline", "Outline", "list"));
+    this.shell.railTabs.appendChild(tab("notes", "Notes", "note"));
 
     // Collapse the whole rail without hunting for the toolbar button.
     const close = document.createElement("button");
     close.className = "rail-close";
-    close.textContent = "×";
+    close.appendChild(icon("x", 15));
     close.title = "collapse panel";
+    close.setAttribute("aria-label", "collapse panel");
     close.addEventListener("click", () => {
       this.railOpen = false;
       this.updateRailVisibility();

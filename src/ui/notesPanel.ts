@@ -1,4 +1,5 @@
 import type { NoteTargetKind } from "../store/schema";
+import { icon, type IconName } from "./icons";
 
 export interface NoteRow {
   id: string;
@@ -18,11 +19,11 @@ export interface NotesPanelHandlers {
   onDelete(id: string): void;
 }
 
-const KIND_ICON: Record<NoteTargetKind, string> = {
-  mark: "▧",
-  box: "▤",
-  group: "▥",
-  page: "¶"
+const KIND_ICON: Record<NoteTargetKind, IconName> = {
+  mark: "square-filled",
+  box: "square",
+  group: "layers",
+  page: "file-text"
 };
 
 // The right-rail Notes panel: one row per note, newest first, with a filter and
@@ -104,14 +105,14 @@ export class NotesPanel {
 
     const top = document.createElement("div");
     top.className = "note-row-top";
-    const icon = document.createElement("span");
-    icon.className = "note-row-icon";
-    icon.textContent = KIND_ICON[row.targetKind] ?? "▧";
+    const kindIcon = document.createElement("span");
+    kindIcon.className = "note-row-icon";
+    kindIcon.appendChild(icon(KIND_ICON[row.targetKind] ?? "square-filled", 12));
     const label = document.createElement("span");
     label.className = "note-row-label";
     label.textContent = row.label;
     label.title = row.label;
-    top.append(icon, label);
+    top.append(kindIcon, label);
     if (row.page !== null) {
       const page = document.createElement("span");
       page.className = "note-row-page";
@@ -136,8 +137,9 @@ export class NotesPanel {
     actions.className = "note-row-actions";
     const edit = document.createElement("button");
     edit.className = "note-row-btn";
-    edit.textContent = "edit";
+    edit.appendChild(icon("pencil", 13));
     edit.title = "edit note";
+    edit.setAttribute("aria-label", "edit note");
     edit.addEventListener("click", (e) => {
       e.stopPropagation();
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -145,8 +147,9 @@ export class NotesPanel {
     });
     const del = document.createElement("button");
     del.className = "note-row-btn danger";
-    del.textContent = "delete";
+    del.appendChild(icon("trash", 13));
     del.title = "delete note";
+    del.setAttribute("aria-label", "delete note");
     del.addEventListener("click", (e) => {
       e.stopPropagation();
       this.handlers.onDelete(row.id);

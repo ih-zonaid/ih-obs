@@ -1,4 +1,5 @@
 import type { Prefs, RecentEntry } from "../store/prefs";
+import { icon } from "./icons";
 
 export interface HomeHandlers {
   onOpen(path: string): void;
@@ -84,8 +85,10 @@ export class Home {
 
     const star = document.createElement("span");
     star.className = "explorer-star";
-    star.textContent = "☆";
+    star.appendChild(icon("star", 14));
     star.title = "pin";
+    star.setAttribute("role", "button");
+    star.setAttribute("aria-label", "pin");
     star.addEventListener("click", (e) => {
       e.stopPropagation();
       this.handlers.onTogglePin(path);

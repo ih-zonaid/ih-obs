@@ -1,4 +1,5 @@
 import type { FsNode } from "../vault/types";
+import { icon } from "./icons";
 
 export interface ExplorerHandlers {
   onOpen(path: string): void;
@@ -122,8 +123,10 @@ export class Explorer {
 
     const star = document.createElement("span");
     star.className = "explorer-star" + (isPinned ? " on" : "");
-    star.textContent = isPinned ? "★" : "☆";
-    star.title = "pin";
+    star.appendChild(icon(isPinned ? "star-filled" : "star", 14));
+    star.title = isPinned ? "unpin" : "pin";
+    star.setAttribute("role", "button");
+    star.setAttribute("aria-label", star.title);
     star.addEventListener("click", (e) => {
       e.stopPropagation();
       this.handlers.onTogglePin(node.path);

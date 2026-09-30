@@ -10,6 +10,7 @@ import {
   type Span
 } from "../store/schema";
 import type { Surface } from "../adapters/types";
+import { icon } from "../ui/icons";
 
 export type OverlayMode = "none" | "occlude" | "highlight";
 
@@ -411,7 +412,7 @@ export class Overlay {
         const dot = document.createElement("span");
         dot.className = "ihobs-region-note";
         dot.title = "note — click to open";
-        dot.textContent = "✎";
+        dot.appendChild(icon("pencil", 8));
         dot.addEventListener("pointerdown", (e) => e.stopPropagation());
         dot.addEventListener("click", (e) => {
           e.stopPropagation();
