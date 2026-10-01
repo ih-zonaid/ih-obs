@@ -18,11 +18,33 @@ export interface Prefs {
   // Set once the user opens/closes the rail themselves; until then we may
   // auto-open the outline for the first paged document.
   railConfigured: boolean;
+  // Line tool's default kind. "none" keeps the original two-step flow (swipe,
+  // then choose occlusion/highlight from the draft's right-click menu); a kind
+  // commits each swipe immediately with that tag.
+  lineDefault: LineDefault;
 }
+
+export type LineDefault = "none" | "occlusion" | "highlight";
 
 export type Theme = "dark" | "light";
 
+// How the document's raster page is tinted, independent of the app `Theme`:
+// dark chrome with a light book is a legitimate combination, so this is its own
+// setting. "invert" is a full dark-mode flip; "warm" is a softer, paper-tinted
+// dim that hides scanner noise better on dirty scans.
+export type PageMode = "off" | "invert" | "warm";
+
+// Canvas 2D can't read CSS variables, and play mode paints the page crop
+// itself, so the filter strings are shared from here. The CSS mirrors these in
+// styles.css (.shell[data-page-tint] rules).
+export const PAGE_FILTERS: Record<PageMode, string> = {
+  off: "none",
+  invert: "invert(1) hue-rotate(180deg)",
+  warm: "invert(0.92) hue-rotate(180deg) sepia(0.3) saturate(1.2) brightness(1.05)"
+};
+
 const THEME_KEY = "ihobs:theme";
+const PAGE_MODE_KEY = "ihobs:page-mode";
 const MAX_RECENTS = 20;
 
 const DEFAULTS: Prefs = {
@@ -33,7 +55,8 @@ const DEFAULTS: Prefs = {
   leftCollapsed: false,
   railOpen: false,
   railTab: "outline",
-  railConfigured: false
+  railConfigured: false,
+  lineDefault: "none"
 };
 
 export class PrefsStore {
@@ -105,6 +128,19 @@ export async function loadTheme(): Promise<Theme> {
 
 export async function saveTheme(theme: Theme): Promise<void> {
   await kvSet(THEME_KEY, theme);
+}
+
+export async function loadPageMode(): Promise<PageMode> {
+  const stored = await kvGet<PageMode>(PAGE_MODE_KEY);
+  return stored === "invert" || stored === "warm" ? stored : "off";
+}
+
+export async function savePageMode(mode: PageMode): Promise<void> {
+  await kvSet(PAGE_MODE_KEY, mode);
+}
+
+export function nextPageMode(mode: PageMode): PageMode {
+  return mode === "off" ? "invert" : mode === "invert" ? "warm" : "off";
 }
 
 export { hasChromeStorage };

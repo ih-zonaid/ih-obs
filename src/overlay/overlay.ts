@@ -21,6 +21,10 @@ export interface OverlayOptions {
   // the caller picks a kind via commitPending(); choosing any other tool
   // discards it.
   onPendingContext?(x: number, y: number): void;
+  // Right-click on the page with the line tool armed but no draft (or beside
+  // one). Lets the caller open the line tool's settings, which is the only way
+  // back once a default kind makes swipes commit immediately.
+  onLineContext?(x: number, y: number): void;
   // Resolves the owner for a freshly drawn mark. Explicit selection wins;
   // otherwise the caller falls back to containment, then page.
   ownerFor(span: Span): string;
@@ -47,6 +51,10 @@ export class Overlay {
   // Fraction of page height, kept sticky across swipes (and pages/zoom,
   // since it's normalized the same way a mark's h is).
   private bandHeight = 0.025;
+  // Line tool's default kind. "none" keeps the two-step flow (swipe, then pick
+  // from the draft's right-click menu); a kind commits each swipe immediately,
+  // which is the whole point of setting a default.
+  private lineDefault: "none" | MarkKind = "none";
   private static readonly BAND_MIN = 0.01;
   private static readonly BAND_MAX = 0.3;
   // Per '[' / ']' keypress, as a fraction of page height.
@@ -104,6 +112,15 @@ export class Overlay {
       layer.addEventListener("pointerup", this.onPointerUp);
       layer.addEventListener("pointerleave", this.onPointerLeave);
       layer.addEventListener("wheel", this.onWheel, { passive: false });
+      // While the line tool is armed, a right-click on the page (not on a
+      // draft's own menu) opens the line tool's settings. This is the only way
+      // to change the default back once auto-commit makes swipes mark directly.
+      layer.addEventListener("contextmenu", (e) => {
+        if (this.mode !== "line") return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.options.onLineContext?.(e.clientX, e.clientY);
+      });
     }
     this.paint();
   }
@@ -159,6 +176,18 @@ export class Overlay {
     return this.mode !== "none";
   }
 
+  // The line tool's default kind, set from its right-click menu. "none" = ask
+  // per swipe; otherwise a swipe commits straight to a mark of that kind.
+  setLineDefault(kind: "none" | MarkKind): void {
+    this.lineDefault = kind;
+  }
+
+  // True while an uncommitted line draft is on the page. The context menu uses
+  // this to decide whether to offer "commit as …" entries.
+  hasPending(): boolean {
+    return this.pending !== null;
+  }
+
   getMarks(): Mark[] {
     return this.marks;
   }
@@ -199,14 +228,20 @@ export class Overlay {
     if (!p) return;
     p.el.remove();
     this.pending = null;
+    this.commitLine(p.span, kind);
+  }
+
+  // Builds a line mark from a span and kind. Shared by commitPending (picker
+  // flow) and an immediate commit when the line tool has a default kind.
+  private commitLine(span: Span, kind: MarkKind): void {
     const mark: Mark = {
       kind: "mark",
       id: newMarkId(),
       tags: [kind],
       label: "",
-      spans: [p.span],
+      spans: [span],
       color: kind === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
-      owner: this.options.ownerFor(p.span) || PAGE_OWNER,
+      owner: this.options.ownerFor(span) || PAGE_OWNER,
       revealed: false
     };
     this.marks.push(mark);
@@ -349,9 +384,14 @@ export class Overlay {
     const span: Span = { page: d.surface, x: nx, y: ny, w: nw, h: nh };
 
     if (this.mode === "line") {
-      // A line swipe produces a neutral, uncommitted draft — no tags, no
-      // color, not persisted. The user's right-click picks occlusion vs
-      // highlight (commitPending); any other tool switch discards it.
+      // With a default kind set, a swipe is committed immediately; otherwise it
+      // stays a neutral draft (no tags, no color, not persisted) and the user
+      // picks occlusion vs highlight from its right-click menu.
+      if (this.lineDefault !== "none") {
+        this.commitLine(span, this.lineDefault);
+        this.hoverMove(layer, e.clientX, e.clientY);
+        return;
+      }
       const el = document.createElement("div");
       el.className = "ihobs-region pending-line";
       el.style.left = `${nx * w}px`;
@@ -403,6 +443,13 @@ export class Overlay {
     this.options.onChange(this.marks);
   }
 
+  // The toolbar's page-scoped toggle: if any mark is hidden, show them all;
+  // otherwise hide them all back.
+  toggleReveal(): void {
+    const anyHidden = this.marks.some((r) => !r.revealed);
+    this.revealAll(anyHidden);
+  }
+
   // Detach marks whose owner box no longer exists, so free marks survive
   // but orphaned attachments fall back to the page.
   reassignOwners(validIds: Set<string>): void {
@@ -438,11 +485,6 @@ export class Overlay {
     r.owner = owner;
     this.paint();
     this.options.onChange(this.marks);
-  }
-
-  toggleReveal(): void {
-    const anyHidden = this.marks.some((r) => !r.revealed);
-    this.revealAll(anyHidden);
   }
 
   remove(id: string): void {

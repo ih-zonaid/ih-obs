@@ -34,6 +34,9 @@ export class Player {
   // The cropped page image without marks. Every paint starts from this so
   // hiding an occlusion truly erases it instead of drawing over the last frame.
   private baseCanvas: HTMLCanvasElement | null = null;
+  // CSS filter applied to the page crop at paint time (page-tone setting). Set
+  // before drawing the base so the marks drawn afterwards keep their colours.
+  private pageFilter = "none";
   private readonly onKey: (e: KeyboardEvent) => void;
 
   constructor(root: HTMLElement, source: PlayerSource, handlers: PlayerHandlers) {
@@ -47,6 +50,14 @@ export class Player {
 
   isOpen(): boolean {
     return this.open;
+  }
+
+  // Play mode composites the page and the marks on one canvas, so the page
+  // tone cannot be a CSS rule here — it is applied to the base crop at paint
+  // time, leaving the marks above it at their true colours.
+  setPageFilter(filter: string): void {
+    this.pageFilter = filter;
+    if (this.open) this.paintOverlayOnly();
   }
 
   start(items: PlayerItem[]): void {
@@ -246,9 +257,13 @@ export class Player {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Start from the clean crop so toggling reveal can erase occlusions.
+    // Start from the clean crop so toggling reveal can erase occlusions. The
+    // page tone filter is scoped to this drawImage and reset before the marks,
+    // so occlusions/highlights are never tinted.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.filter = this.pageFilter;
     ctx.drawImage(base, 0, 0);
+    ctx.filter = "none";
 
     // In play mode the player drives reveal, ignoring per-mark revealed state.
     const marks = this.source.marksFor(item.id).filter((m) => m.spans[0]?.page === span.page);
@@ -262,9 +277,18 @@ export class Player {
       if (m.tags.includes("highlight")) {
         ctx.fillStyle = "rgba(245, 197, 24, 0.3)";
         ctx.fillRect(mx, my, mw, mh);
+      } else if (this.revealed) {
+        // A revealed occlusion leaves a dashed skeleton rather than vanishing,
+        // matching the document overlay so the answer's spot stays visible.
+        const lw = 1.5;
+        ctx.save();
+        ctx.strokeStyle = "rgba(122, 162, 247, 0.9)";
+        ctx.lineWidth = lw;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(mx + lw / 2, my + lw / 2, Math.max(1, mw - lw), Math.max(1, mh - lw));
+        ctx.restore();
       } else {
         // Occlusions cover the answer and clear once revealed.
-        if (this.revealed) continue;
         ctx.fillStyle = m.color || "#1f2430";
         ctx.fillRect(mx, my, mw, mh);
       }

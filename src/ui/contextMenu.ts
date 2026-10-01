@@ -6,6 +6,9 @@ export interface ContextMenuItem {
   hint?: string;
   // Small colored dot before the label, e.g. for a color quick-pick.
   swatch?: string;
+  // Radio-style entry: draws a tick when true, so a menu can show which of a
+  // set of mutually exclusive settings is currently active.
+  checked?: boolean;
 }
 
 export type ContextMenuEntry = ContextMenuItem | "separator";
@@ -51,6 +54,12 @@ class ContextMenu {
       item.disabled = !!entry.disabled;
       const main = document.createElement("span");
       main.className = "ctx-item-main";
+      if (entry.checked) {
+        const tick = document.createElement("span");
+        tick.className = "ctx-check";
+        tick.textContent = "✓";
+        main.appendChild(tick);
+      }
       if (entry.swatch) {
         const dot = document.createElement("span");
         dot.className = "ctx-swatch";

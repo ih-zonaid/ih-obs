@@ -101,6 +101,7 @@ body {
 }
 .tb-zoombox.hidden { display: none; }
 .tb-text-debug.hidden { display: none; }
+[data-action="toggle-page-mode"].hidden { display: none; }
 .tb-zoom-btn { min-width: 52px; text-align: center; }
 .tb-page {
   display: flex;
@@ -344,6 +345,48 @@ body {
 }
 .pdf-page.is-rendered .pdf-placeholder { display: none; }
 
+/* ---- Scanned/PDF page dark mode -----------------------------------------
+   The raster page is darkened independently of the app theme, because dark
+   chrome with a light book is a legitimate pairing. The filter is applied to
+   the canvas/image ONLY — the mark layers (.ihobs-overlay, .seg-layer) are
+   absolutely-positioned siblings, so occlusions and highlights keep the colours
+   the user picked. A dark app theme selects which tone is used; the user turns
+   it on/off with the toolbar's page-tone button (data-page-tint). */
+
+.shell[data-page-theme="dark"][data-page-tint="on"] .pdf-canvas,
+.shell[data-page-theme="dark"][data-page-tint="on"] .img-canvas {
+  filter: invert(1) hue-rotate(180deg);
+}
+.shell[data-page-theme="dark"][data-page-tint="on"] .pdf-page,
+.shell[data-page-theme="dark"][data-page-tint="on"] .pdf-placeholder {
+  background: #0f1115;
+}
+.shell[data-page-theme="dark"][data-page-tint="on"] .pdf-placeholder {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Warm "paper" tone: softer than a full flip and friendlier to dirty scans,
+   whose grain would otherwise turn into bright speckle. */
+.shell[data-page-theme="dark"][data-page-tint="warm"] .pdf-canvas,
+.shell[data-page-theme="dark"][data-page-tint="warm"] .img-canvas {
+  filter: invert(0.92) hue-rotate(180deg) sepia(0.3) saturate(1.2) brightness(1.05);
+}
+.shell[data-page-theme="dark"][data-page-tint="warm"] .pdf-page,
+.shell[data-page-theme="dark"][data-page-tint="warm"] .pdf-placeholder {
+  background: #14110c;
+}
+.shell[data-page-theme="dark"][data-page-tint="warm"] .pdf-placeholder {
+  filter: invert(0.92) hue-rotate(180deg) sepia(0.3) saturate(1.2) brightness(1.05);
+}
+
+/* Highlights use mix-blend-mode: multiply, which turns black over an inverted
+   page. Screen mode keeps them visible on the dark raster. */
+.shell[data-page-theme="dark"][data-page-tint="on"] .ihobs-region.highlight,
+.shell[data-page-theme="dark"][data-page-tint="warm"] .ihobs-region.highlight {
+  mix-blend-mode: screen;
+  background: rgba(245, 197, 24, 0.24) !important;
+}
+
 /* Selectable text layer (pdf.js pattern): transparent glyph boxes positioned
    over the canvas so page text can be selected and copied like Chrome's viewer. */
 .pdf-page .textLayer {
@@ -429,7 +472,15 @@ body {
    is committed yet, just showing which row/height would be stamped. */
 .ihobs-region.ghost.hover-line { opacity: 0.22; }
 .ihobs-region.occlusion { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
-.ihobs-region.occlusion.revealed { opacity: 0; }
+/* A revealed occlusion drops its fill but keeps a dashed outline, so the spot
+   still reads as "there is an answer here" and can be clicked to cover again. */
+.ihobs-region.occlusion.revealed {
+  opacity: 1 !important;
+  background: transparent !important;
+  outline: 1px dashed rgba(122, 162, 247, 0.9);
+  outline-offset: -1px;
+  box-shadow: none;
+}
 /* Marks attached to a box get a dashed outline so ownership is visible. */
 .ihobs-region.attached { outline: 1.5px dashed rgba(122, 162, 247, 0.75); outline-offset: 1px; }
 .ihobs-region.inspect { outline: 1.5px solid #ff9e64; outline-offset: 1px; }
@@ -628,6 +679,9 @@ body {
   background: var(--bg);
 }
 .player-canvas { max-width: 100%; background: #fff; box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5); }
+/* The crop is tinted at paint time (see Player.setPageFilter), so its backdrop
+   follows the app theme rather than staying a white card. */
+.shell[data-theme="dark"] .player-canvas { background: transparent; }
 .player-foot {
   display: flex;
   align-items: center;
@@ -975,6 +1029,14 @@ body {
 .ctx-item.danger { color: #f7768e; }
 .ctx-item.danger:hover:not(:disabled) { background: #f7768e; color: #0b0d10; }
 .ctx-item-main { display: flex; align-items: center; gap: 8px; }
+.ctx-check {
+  flex: 0 0 auto;
+  width: 10px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+.ctx-item:hover:not(:disabled) .ctx-check { color: #0b0d10; }
 .ctx-swatch {
   width: 10px;
   height: 10px;

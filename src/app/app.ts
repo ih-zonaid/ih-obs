@@ -15,7 +15,17 @@ import {
 } from "../host/idb";
 import { Overlay, type OverlayMode } from "../overlay/overlay";
 import { SidecarStore } from "../store/sidecar";
-import { loadTheme, PrefsStore, saveTheme } from "../store/prefs";
+import {
+  loadPageMode,
+  loadTheme,
+  nextPageMode,
+  PAGE_FILTERS,
+  PrefsStore,
+  savePageMode,
+  saveTheme,
+  type LineDefault,
+  type PageMode
+} from "../store/prefs";
 import { kvGet, kvRemove, kvSet } from "../store/kv";
 import {
   anchorOf,
@@ -178,6 +188,8 @@ export class App {
   private pendingSelection: CapturedSelection | null = null;
   private currentPath: string | null = null;
   private scrollMemo = new Map<string, number>();
+  private pageMode: PageMode = "off";
+  private lineDefault: LineDefault = "none";
   private readonly onScroll: () => void;
   private scrollTimer: number | null = null;
   private loadSeq = 0;
@@ -250,8 +262,11 @@ export class App {
   private async boot(): Promise<void> {
     const theme = await loadTheme();
     this.applyTheme(theme);
+    this.pageMode = await loadPageMode();
     this.wire();
     this.toolbar.setThemeIcon(theme);
+    this.toolbar.setPageMode(this.pageMode);
+    this.applyPageMode();
     this.applyDebugParam();
 
     await this.migrateLegacy();
@@ -348,6 +363,7 @@ export class App {
       onOpenPalette: () => this.palette.toggle(),
       onHome: () => this.showHome(),
       onToggleTheme: () => void this.toggleTheme(),
+      onCyclePageMode: () => void this.cyclePageMode(),
       onMode: (mode) => {
         this.mode = mode;
         this.overlay?.setMode(mode);
@@ -403,6 +419,9 @@ export class App {
   private applyTheme(theme: "dark" | "light"): void {
     this.shell.root.dataset.theme = theme;
     document.documentElement.dataset.theme = theme;
+    // The page tone is only meaningful on a dark app theme; mirror that onto
+    // the shell so the CSS page-tint rules can key off it.
+    this.shell.root.dataset.pageTheme = theme;
   }
 
   private async toggleTheme(): Promise<void> {
@@ -410,6 +429,27 @@ export class App {
     await saveTheme(next);
     this.applyTheme(next);
     this.toolbar.setThemeIcon(next);
+    // The effective page tone depends on the app theme (see applyPageMode).
+    this.applyPageMode();
+  }
+
+  // Cycles the raster page's tone independently of the app theme: normal →
+  // inverted → warm dim. Persisted like the theme.
+  private async cyclePageMode(): Promise<void> {
+    const next = nextPageMode(this.pageMode);
+    this.pageMode = next;
+    await savePageMode(next);
+    this.applyPageMode();
+    this.toolbar.setPageMode(next);
+  }
+
+  private applyPageMode(): void {
+    const tint = this.pageMode === "invert" ? "on" : this.pageMode;
+    this.shell.root.dataset.pageTint = tint;
+    // Mirrors the CSS: the tone only applies on a dark app theme, and play mode
+    // composites the raster itself so it needs the filter passed down.
+    const dark = document.documentElement.dataset.theme !== "light";
+    this.player?.setPageFilter(dark ? PAGE_FILTERS[this.pageMode] : "none");
   }
 
   private async showHub(): Promise<void> {
@@ -502,6 +542,7 @@ export class App {
     this.leftCollapsed = prefs.leftCollapsed;
     this.railOpen = prefs.railOpen;
     this.railTab = prefs.railTab;
+    this.lineDefault = prefs.lineDefault ?? "none";
     this.applyLeftCollapsed();
     this.toolbar.setExplorer(!this.leftCollapsed);
 
@@ -629,6 +670,8 @@ export class App {
     this.view = view;
 
     this.setupZoom(view);
+    // Only raster documents (PDF pages, images) have a page tone to set.
+    this.toolbar.setPageModeVisible(view.kind === "pdf" || view.kind === "image");
     this.applyTextDebug();
     this.openRailFor(view);
     await this.attachOverlay(view);
@@ -716,6 +759,7 @@ export class App {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
       onPendingContext: (x, y) => this.openPendingLineMenu(x, y),
+      onLineContext: (x, y) => this.openLineSettings(x, y),
       ownerFor: (geom) => this.resolveOwner(geom),
       ownerLabel: (owner) => this.ownerLabel(owner),
       hasNote: (id) => this.hasNote(id),
@@ -723,6 +767,7 @@ export class App {
     });
     overlay.setMode(this.mode);
     overlay.setInspect(this.inspect);
+    overlay.setLineDefault(this.lineDefault);
     this.overlay = overlay;
 
     this.entities = model.entities;
@@ -1736,34 +1781,69 @@ export class App {
     this.refreshOutline();
   }
 
-  // Right-click on an uncommitted line draft. Picking a kind commits it to a
-  // real mark; dismissing the menu (or switching tools) discards the draft.
+  // Right-click on an uncommitted line draft, or (via onLineContext) on the
+  // page while the line tool is armed. The first group commits the draft being
+  // right-clicked; the group below sets the line tool's default kind for future
+  // swipes. Picking a specific default also commits the current draft, so "set
+  // default" and "place this line" are one gesture.
   private openPendingLineMenu(clientX: number, clientY: number): void {
-    openContextMenu(
+    this.openLineMenu(clientX, clientY, true);
+  }
+
+  private openLineSettings(clientX: number, clientY: number): void {
+    this.openLineMenu(clientX, clientY, false);
+  }
+
+  private openLineMenu(clientX: number, clientY: number, withDraft: boolean): void {
+    const commit = (kind: MarkKind) => {
+      this.overlay?.commitPending(kind);
+      void this.persist();
+    };
+    const items: ContextMenuEntry[] = [];
+    if (withDraft && this.overlay?.hasPending()) {
+      items.push(
+        { label: "Use as occlusion", swatch: DEFAULT_OCCLUSION_COLOR, onSelect: () => commit("occlusion") },
+        { label: "Use as highlight", swatch: HIGHLIGHT_COLOR, onSelect: () => commit("highlight") },
+        "separator"
+      );
+    }
+    items.push(
+      { label: "Default for new lines", disabled: true, onSelect: () => undefined },
       {
-        title: "Line — choose a kind",
-        items: [
-          {
-            label: "Occlusion",
-            swatch: DEFAULT_OCCLUSION_COLOR,
-            onSelect: () => {
-              this.overlay?.commitPending("occlusion");
-              void this.persist();
-            }
-          },
-          {
-            label: "Highlight",
-            swatch: HIGHLIGHT_COLOR,
-            onSelect: () => {
-              this.overlay?.commitPending("highlight");
-              void this.persist();
-            }
-          }
-        ]
+        label: "Occlusion",
+        swatch: DEFAULT_OCCLUSION_COLOR,
+        checked: this.lineDefault === "occlusion",
+        hint: this.lineDefault === "occlusion" ? "current" : undefined,
+        onSelect: () => void this.setLineDefault("occlusion", true)
       },
-      clientX,
-      clientY
+      {
+        label: "Highlight",
+        swatch: HIGHLIGHT_COLOR,
+        checked: this.lineDefault === "highlight",
+        hint: this.lineDefault === "highlight" ? "current" : undefined,
+        onSelect: () => void this.setLineDefault("highlight", true)
+      },
+      {
+        label: "Ask each swipe",
+        checked: this.lineDefault === "none",
+        hint: this.lineDefault === "none" ? "current" : undefined,
+        onSelect: () => void this.setLineDefault("none", false)
+      }
     );
+    openContextMenu({ title: withDraft ? "Line — choose a kind" : "Line tool", items }, clientX, clientY);
+  }
+
+  // Sets the line tool's next-swipe kind for this vault. `commitDraft` also
+  // places the draft currently on the page, so the setting applies to the very
+  // line the menu was invoked from.
+  private async setLineDefault(kind: LineDefault, commitDraft: boolean): Promise<void> {
+    this.lineDefault = kind;
+    this.overlay?.setLineDefault(kind);
+    if (commitDraft && kind !== "none") {
+      this.overlay?.commitPending(kind);
+      void this.persist();
+    }
+    await this.prefs.update({ lineDefault: kind });
   }
 
   // Human-readable owner label for inspect mode badges and menus.
@@ -1971,6 +2051,7 @@ export class App {
     this.zoomCtl = null;
     this.toolbar.setZoomVisible(false);
     this.toolbar.setTextDebugVisible(false);
+    this.toolbar.setPageModeVisible(false);
     this.toolbar.setPage(1, 1);
     this.view?.destroy();
     this.view = null;

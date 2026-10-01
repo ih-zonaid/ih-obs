@@ -1,4 +1,5 @@
 import type { OverlayMode } from "../overlay/overlay";
+import type { PageMode } from "../store/prefs";
 import { icon, setIcon, type IconName } from "./icons";
 
 export interface ToolbarHandlers {
@@ -10,6 +11,7 @@ export interface ToolbarHandlers {
   onSave(): void;
   onHome(): void;
   onToggleTheme(): void;
+  onCyclePageMode(): void;
   onZoomIn(): void;
   onZoomOut(): void;
   onZoomReset(): void;
@@ -196,6 +198,12 @@ export class Toolbar {
       { action: "toggle-theme", label: "theme" },
       () => this.h.onToggleTheme()
     );
+    const pageMode = this.iconCtrl(
+      "contrast",
+      "page tone: normal → invert → warm dim (darken a scanned book)",
+      { extra: "tb-page-mode hidden", action: "toggle-page-mode", label: "page tone" },
+      () => this.h.onCyclePageMode()
+    );
 
     // Fixed (identity/document) controls first, then the movable tool/view/debug
     // controls in demotion order.
@@ -217,6 +225,7 @@ export class Toolbar {
     this.addItem(save, true);
     this.addItem(outlineBtn, true);
     this.addItem(notesBtn, true);
+    this.addItem(pageMode, true);
     this.addItem(theme, true);
 
     this.overflowBtn = this.iconCtrl(
@@ -533,5 +542,21 @@ export class Toolbar {
     el.title = title;
     el.setAttribute("aria-label", title);
     el.dataset.label = `${next} theme`;
+  }
+
+  setPageMode(mode: PageMode): void {
+    const el = this.root.querySelector<HTMLElement>('[data-action="toggle-page-mode"]');
+    if (!el) return;
+    el.classList.toggle("active", mode !== "off");
+    const name = mode === "off" ? "normal" : mode === "invert" ? "inverted" : "warm dim";
+    const title = `page tone: ${name} — click to cycle (normal → invert → warm)`;
+    el.title = title;
+    el.setAttribute("aria-label", title);
+    el.dataset.label = `page tone: ${name}`;
+  }
+
+  setPageModeVisible(visible: boolean): void {
+    this.root.querySelector('[data-action="toggle-page-mode"]')?.classList.toggle("hidden", !visible);
+    this.scheduleRelayout();
   }
 }
