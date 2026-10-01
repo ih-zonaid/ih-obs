@@ -18,8 +18,9 @@ markdown, and JSON.
 - The PDF is only the bottom layer. The value of the app is what gets pinned
   on top of it: boxes, marks, notes, and play mode.
 
-Stack: Vite + TypeScript, no UI framework (hand-built DOM). Two runtime deps:
-`pdfjs-dist` (PDF rendering + text layer) and `marked` (markdown).
+Stack: Vite + TypeScript, no UI framework (hand-built DOM). Three runtime deps:
+`pdfjs-dist` (PDF rendering + text layer), `marked` (markdown), and `ts-fsrs`
+(the FSRS spaced-repetition scheduler, adapted in `src/srs/fsrs.ts`).
 Dev deps: `typescript`, `vite`, `@types/chrome`, `@types/node`.
 
 ## 2. Core mental model
@@ -86,6 +87,56 @@ A mark **is** a flashcard iff `mark.card` is set. No automatic promotion.
 - Play scope is **within a frame** — cards whose *mark span* falls inside the
   selected frame's span (testing the derived crop would fail for the default
   full-width band; see `openPlayer` in `app.ts`).
+
+### 3b. Scheduling (`src/srs/`, `src/store/review.ts`)
+
+Cards are scheduled with **FSRS** (the `ts-fsrs` engine, adapter at
+`src/srs/fsrs.ts`, defaults matching the Obsidian spaced-repetition plugin:
+retention 0.9, short-term steps on, the same four grades). Everything is
+dependency-free pure logic except `fsrs.ts`, and `now` is always passed in, never
+read inside the algorithm.
+
+- **Card identity is the mark id.** There is no content hashing, no anchor
+  reconciliation and no orphan handling: delete a mark and its schedule row
+  simply goes. A `ReviewRow` is `{ due, algo, d, reps, lapses, last }`; `d` is
+  opaque to every layer but the algorithm that wrote it.
+- **The review store** (`src/store/review.ts`) keeps one file per document at
+  `.ihobs/review/<doc with / → __>.json`, separate from the annotation sidecar.
+  This is deliberate: annotations are rewritten wholesale on every mark drag, so
+  study state living there would be rewritten by geometry edits. One writer each.
+  Which marks are cards stays owned by the annotation sidecar.
+- **The algorithm seam** (`src/srs/registry.ts`): algorithms live in an id →
+  algorithm table; each card pins `algo` at its first review, so a card never
+  switches algorithms when the default changes. SM-2 is the intended second
+  implementation and needs one file plus one `registerScheduleAlgorithm()` call —
+  no migration. `algorithm.ts` (with optional `toRecord`/`fromRecord`) is the
+  whole contract the rest of the app sees.
+- **One write path** (`applyReview` in `src/srs/review.ts`); grade buttons show
+  the interval each grade *would* schedule, computed by the same `next()` the
+  real review runs (`previewIntervals` → `formatPreviews`).
+- **Queue** (`src/srs/queue.ts`): cards due now first (longest overdue first),
+  then new; cards scheduled ahead are progress, not a queue. `countDeck`,
+  `sumCounts` and `buryGroup` (reveal-group siblings) live here too.
+
+### 3c. Decks from the outline
+
+The outline is the **deck filter**. Each row is a scope; its deck is the card
+marks in that row's subtree, and counts roll up so a parent already includes its
+descendants.
+
+- A card belongs to the box that **owns** it (its deepest container). It is also
+  reachable from a row that contains its `card.context` or `card.frame` box, so a
+  card's crop boxes are themselves valid deck handles even if the mark sits
+  elsewhere.
+- Page-scoped cards (no live box owner) form one synthetic **Ungrouped cards**
+  row at the top of the outline (`UNGROUPED_DECK` in `src/ui/outline.ts`); they
+  would otherwise appear in no subtree and contribute to no ancestor badge.
+- Each row shows a deck badge: `◇` + (due + new), blue when there is work, with
+  the full `due · new · scheduled · total` breakdown in the tooltip. A dim play
+  button on every row plays that subtree's cards through `buildQueue`.
+- `question` and `frame` rows keep their legacy meanings (question plays the one
+  box; frame plays the cards inside it). `concept`/`questions`/`other`/anchor
+  rows play their subtree as a deck.
 
 ### Ownership rules (the heart of the design)
 
@@ -156,14 +207,19 @@ Order is document position (page, then y).
 ### Recall
 - **Play mode** (`src/ui/player.ts`): one question at a time. Crops the
   question's span from the page image, paints its marks, and lets the user
-  reveal/navigate. Scope = selected questions container's descendants, a single
-  question, or all questions. Keyboard: ←/→ navigate, Space/Enter reveal, Esc close.
-  A question shows marks attached to it plus marks geometrically inside it that
-  aren't owned by another question (`marksForBox` in `app.ts`).
+  reveal/navigate. Scope = a deck's cards, the selected questions container's
+  descendants, a single question, or all questions. Keyboard: ←/→ navigate,
+  Space/Enter reveal, `1`–`4` grade, Esc close. A question shows marks attached
+  to it plus marks geometrically inside it that aren't owned by another question
+  (`marksForBox` in `app.ts`).
 - **Cards** (schema v6): a mark with `card` set is a flashcard; its question side
   is `card.context` or a full-width band, clipped by `card.frame`. A `frame` box
   plays the cards inside it (▶ in the outline, or the box context menu); a mark's
   menu can play just that card. See §3a.
+- **Grading**: revealing a card shows four grade buttons (Again/Hard/Good/Easy)
+  labelled with the interval each would schedule. Grading advances the FSRS
+  schedule and buries reveal-group siblings. See §3b.
+- **Decks**: each outline row is a playable deck with a due/new badge; see §3c.
 - **Reveal controls**: toggle reveal, hide all, per-mark click toggle.
 
 ### Debugging / authoring aids
@@ -193,7 +249,12 @@ src/overlay/      overlay.ts (marks: draw, paint, reveal, owner menus)
 src/segment/      detect.ts (layout-based detection), layout.ts (bitmap/band/otsu)
 src/selection/    textSelection.ts (DOM selection → normalized hulls)
 src/store/        schema.ts (types, outline tree, ownership, migration),
-                  sidecar.ts (read/write .ihobs JSON), prefs.ts, kv.ts
+                  sidecar.ts (read/write .ihobs JSON), review.ts (per-document
+                  SRS state, .ihobs/review/*.json), prefs.ts, kv.ts
+src/srs/          algorithm.ts (contract), registry.ts (id → algorithm seam),
+                  fsrs.ts (ts-fsrs adapter), review.ts (applyReview, previews),
+                  queue.ts (buildQueue, deck counts), workload.ts, format.ts,
+                  status.ts, row.ts, grade.ts, index.ts (barrel)
 src/notes/        render.ts (markdown → sanitized HTML + wikilinks)
 src/ui/           toolbar, explorer, home, vaultHub, palette, outline,
                   segmentDraw, segmentLayer, notesPanel, notePopover,
@@ -211,6 +272,9 @@ src/host/         idb.ts (vault handle registry), dom.d.ts (extra DOM typings)
   - `saveEntities`, `saveNotes`, `saveRule` each merge into the existing
     model and rewrite version 6. `saveEntities` writes the whole entity array
     (boxes, anchors and marks together), so there is a single writer.
+- **Review state**: `.ihobs/review/<path with / → __>.json` — one file per
+  document, keyed by mark id, written only by `ReviewStore` (§3b). A document
+  whose last row is dropped removes its file.
 - **Prefs / theme / scroll / recents**: `localStorage` (or
   `chrome.storage.local` if present) via `src/store/kv.ts`.
   Per-vault pref keys: `ihobs:prefs:<vaultId>`.

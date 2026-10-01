@@ -14,6 +14,7 @@ import {
   type VaultRecord
 } from "../host/idb";
 import { Overlay, type OverlayMode } from "../overlay/overlay";
+import { ReviewStore } from "../store/review";
 import { SidecarStore } from "../store/sidecar";
 import {
   loadPageMode,
@@ -72,17 +73,26 @@ import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { icon } from "../ui/icons";
-import { Outline } from "../ui/outline";
+import { Outline, UNGROUPED_DECK } from "../ui/outline";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
 import { openNoteEditor } from "../ui/notePopover";
 import { Palette } from "../ui/palette";
-import { Player } from "../ui/player";
+import { Player, type PlayerItem } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
 import { Transform, type TransformTarget } from "../ui/transform";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
 import { ZoomController } from "../ui/zoom";
+import {
+  buildQueue,
+  countDeck,
+  formatPreviews,
+  previewIntervals,
+  workloadFrom,
+  type DeckCounts,
+  type ReviewGrade,
+} from "../srs";
 import "../ui/styles.css";
 
 const SCROLL_PREFIX = "ihobs:scroll:";
@@ -167,6 +177,7 @@ export class App {
   private vaults: VaultRecord[] = [];
   private vault: VaultRecord | null = null;
   private store: SidecarStore | null = null;
+  private reviewStore: ReviewStore | null = null;
   private prefs = new PrefsStore();
 
   private view: DocView | null = null;
@@ -335,8 +346,12 @@ export class App {
       onAutoSegment: () => void this.runSegmentation(),
       onSplitApply: () => void this.applySplit(),
       onSplitCancel: () => this.setDrawTool(null),
-      onPlay: (id) => void this.openPlayer(id),
+      onPlay: (id, scope) =>
+        scope === "deck" ? this.playDeck(id) : void this.openPlayer(id),
       onClear: () => void this.clearAll(),
+      decks: () => this.deckCounts(),
+      onBrowseDeck: (id) => this.browseDeck(id),
+      docPath: () => this.currentPath ?? "",
       onNote: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y),
       hasNote: (id) => this.hasNote(id)
     });
@@ -347,9 +362,14 @@ export class App {
         loadPage: (page, scale) => this.loadPageImage(page, scale),
         // A play item id is a box id for question play and a mark id for card
         // play; resolve whichever it is.
-        marksFor: (id) => this.marksForPlayerItem(id)
+        marksFor: (id) => this.marksForPlayerItem(id),
+        preview: (id) => this.cardPreviews(id),
+        siblingIds: (id) => this.siblingCardIds(id)
       },
-      { onClose: () => undefined }
+      {
+        onClose: () => undefined,
+        onGrade: (grade, id) => void this.gradeCard(grade, id)
+      }
     );
 
     this.notesPanel = new NotesPanel(this.shell.notes, {
@@ -534,6 +554,7 @@ export class App {
     this.teardown();
     this.vault = rec;
     this.store = new SidecarStore(rec.handle);
+    this.reviewStore = new ReviewStore(rec.handle);
     this.prefs = new PrefsStore().withVault(rec.id);
     const prefs = await this.prefs.load();
     this.toolbar.setVaultLabel(rec.label);
@@ -675,6 +696,10 @@ export class App {
     this.applyTextDebug();
     this.openRailFor(view);
     await this.attachOverlay(view);
+    // Review state is a second file; load it before the first outline render so
+    // deck badges are correct on open rather than after the first interaction.
+    if (this.reviewStore) await this.reviewStore.load(path);
+    this.refreshOutline();
     await this.restoreScroll(path);
     await this.prefs.pushRecent(path);
   }
@@ -1137,6 +1162,7 @@ export class App {
       onSelect: () => {
         this.overlay?.remove(id);
         void this.persist();
+        void this.dropReviewRows([id]);
       }
     });
     openContextMenu({ title: `${kindLabel} · ${ownerName}`, items }, clientX, clientY);
@@ -1236,6 +1262,9 @@ export class App {
     else delete mark.card;
     this.overlay?.repaint();
     void this.persist();
+    // A mark that is no longer a card has no schedule to keep. The mark itself
+    // stays; only its review row goes.
+    if (!card) void this.dropReviewRows([markId]);
     this.refreshOutline();
   }
 
@@ -1257,14 +1286,209 @@ export class App {
       return pa - pb || (a.spans[0]?.y ?? 0) - (b.spans[0]?.y ?? 0);
     });
     const entities = this.allEntities();
-    this.player.start(
-      cards.map((m) => ({
-        id: m.id,
-        label: m.label.replace(/^#+\s*/, "") || "card",
-        span: m.spans[0] ?? null,
-        crop: cardCrop(m, entities)
-      }))
+    const items = cards.map((m) => ({
+      id: m.id,
+      label: m.label.replace(/^#+\s*/, "") || "card",
+      span: m.spans[0] ?? null,
+      crop: cardCrop(m, entities)
+    }));
+    this.player.start(this.reviewOrder(items));
+  }
+
+  /**
+   * Reorders a card list into a study session: overdue first, then new, with
+   * not-yet-due cards dropped. Falls back to the caller's order when this is not
+   * a paged document or the review store has not loaded.
+   *
+   * This is the deck seam: because it takes ids rather than a box, the outline
+   * can later pass any branch's cards through the same function.
+   */
+  private reviewOrder(items: PlayerItem[]): PlayerItem[] {
+    if (!this.reviewStore || !this.currentPath) return items;
+    const rows = this.reviewStore.rows(this.currentPath);
+    const order = buildQueue(
+      items.map((item) => item.id),
+      rows,
+      Date.now()
     );
+    if (order.length === 0) return items;
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const ordered = order
+      .map((card) => byId.get(card.markId))
+      .filter((item): item is PlayerItem => !!item);
+    // A scope where nothing is due yet still plays, in document order: an
+    // explicit play is a request to see these cards, not only the due ones.
+    return ordered.length ? ordered : items;
+  }
+
+  /**
+   * The workload histogram a grading session balances against: every row the
+   * document has, not just the cards on screen, so long intervals spread across
+   * the whole document rather than piling onto the day after this session.
+   */
+  private sessionWorkload(): ReturnType<typeof workloadFrom> | undefined {
+    if (!this.reviewStore || !this.currentPath) return undefined;
+    return workloadFrom(
+      this.reviewStore.reviewedIds(this.currentPath),
+      this.reviewStore.rows(this.currentPath),
+      Date.now()
+    );
+  }
+
+  /** Grade-button labels for a card, or null when it is not a schedulable card. */
+  private cardPreviews(id: string): Record<ReviewGrade, string> | null {
+    const mark = this.markById(id);
+    if (!mark || !isCard(mark)) return null;
+    const rows = this.reviewStore?.rows(this.currentPath ?? "") ?? {};
+    const previews = previewIntervals({
+      row: rows[id] ?? null,
+      now: Date.now(),
+      workload: this.sessionWorkload()
+    });
+    return formatPreviews(previews);
+  }
+
+  /** Marks that reveal together with this card, for bury-siblings. */
+  private siblingCardIds(id: string): string[] {
+    const mark = this.markById(id);
+    const group = mark?.groupId;
+    if (!group) return [];
+    return this.marks()
+      .filter((m) => m.id !== id && isCard(m) && m.groupId === group)
+      .map((m) => m.id);
+  }
+
+  /** Records a grade. The player has already advanced past the card. */
+  private async gradeCard(grade: ReviewGrade, id: string): Promise<void> {
+    if (!this.reviewStore || !this.currentPath) return;
+    if (!this.markById(id)) return;
+    await this.reviewStore.grade({
+      docPath: this.currentPath,
+      markId: id,
+      grade,
+      workload: this.sessionWorkload()
+    });
+    // Counts (and the grade previews for the rest of the session) shifted.
+    this.refreshOutline();
+  }
+
+  /** Forgets schedule state for marks that no longer exist. */
+  private async dropReviewRows(markIds: string[]): Promise<void> {
+    if (!this.reviewStore || !this.currentPath) return;
+    await this.reviewStore.drop(this.currentPath, markIds);
+  }
+
+  // ---- Decks ------------------------------------------------------------
+  //
+  // A deck is the set of card marks reachable from one outline node: the cards
+  // the node's own box resolves to, plus everything its descendants resolve to.
+  // A card can be reachable from more than one box (its owner, and any context
+  // or frame box it names), so every level is a *set union* — a card is counted
+  // once per deck no matter how many ways in, and a parent's total is never more
+  // than the number of distinct cards beneath it.
+
+  /** Every card mark the app can currently see, including unsynced overlay ones. */
+  private cards(): Mark[] {
+    return this.allEntities().filter(isCard) as Mark[];
+  }
+
+  // The cards one box resolves to, mirroring what play mode already does:
+  //   - a frame plays the cards inside its span, or explicitly framed by it;
+  //   - anything else uses `marksForBox` (owned marks plus marks geometrically
+  //     inside that no other question owns).
+  private deckCardsForBox(box: Box): Mark[] {
+    if (isFrame(box)) {
+      const span = box.spans[0];
+      return this.cards().filter((m) => {
+        if (m.card?.frame) return m.card.frame === box.id;
+        return span ? m.spans.some((s) => containsSpan(box, s)) : false;
+      });
+    }
+    return this.marksForBox(box.id).filter(isCard) as Mark[];
+  }
+
+  // Cards reachable from no box at all: page-scoped marks, and marks whose only
+  // handle is a box that no longer exists. These get the synthetic deck.
+  private looseCards(): Mark[] {
+    const covered = new Set<string>();
+    for (const box of this.boxes()) {
+      for (const m of this.deckCardsForBox(box)) covered.add(m.id);
+    }
+    return this.cards().filter((m) => !covered.has(m.id));
+  }
+
+  private deckCards(id: string): Mark[] {
+    if (id === UNGROUPED_DECK) return this.looseCards();
+    const tree = buildOutlineTree(this.allEntities());
+    const node = findNode(tree, id);
+    const seen = new Map<string, Mark>();
+    const gather = (n: OutlineNode): void => {
+      const box = this.boxById(n.id);
+      if (box) for (const m of this.deckCardsForBox(box)) seen.set(m.id, m);
+      for (const child of n.children) gather(child);
+    };
+    if (node) gather(node);
+    else {
+      const box = this.boxById(id);
+      if (box) for (const m of this.deckCardsForBox(box)) seen.set(m.id, m);
+    }
+    return [...seen.values()];
+  }
+
+  // Per-scope deck counts for the outline badges, keyed by box id plus
+  // `UNGROUPED_DECK`. A post-order union means each ancestor's count is the
+  // distinct cards beneath it, with no double counting through shared handles.
+  private deckCounts(): Map<string, DeckCounts> {
+    const out = new Map<string, DeckCounts>();
+    if (!this.reviewStore || !this.currentPath) return out;
+    const rows = this.reviewStore.rows(this.currentPath);
+    const now = Date.now();
+
+    const visit = (node: OutlineNode): Set<string> => {
+      const ids = new Set<string>();
+      const box = this.boxById(node.id);
+      if (box) for (const m of this.deckCardsForBox(box)) ids.add(m.id);
+      for (const child of node.children) {
+        for (const id of visit(child)) ids.add(id);
+      }
+      out.set(node.id, countDeck([...ids], rows, now));
+      return ids;
+    };
+    for (const root of buildOutlineTree(this.allEntities())) visit(root);
+
+    const loose = this.looseCards();
+    out.set(UNGROUPED_DECK, countDeck(loose.map((m) => m.id), rows, now));
+    return out;
+  }
+
+  // Plays a deck when its outline row is clicked. Falls through to document
+  // order when nothing is due (an explicit play should still show the cards).
+  private playDeck(id: string): void {
+    if (!this.view?.getPageImages) {
+      window.alert("Play mode supports PDFs.");
+      return;
+    }
+    const cards = this.deckCards(id);
+    if (!cards.length) {
+      window.alert("No cards in this scope. Make a mark a card first.");
+      return;
+    }
+    this.playCards(cards);
+  }
+
+  // Clicking an ungrouped/other deck row with no play selects its first card and
+  // scrolls to it, so the row is a navigator as well as a launch button.
+  private browseDeck(id: string): void {
+    const cards = this.deckCards(id).sort(
+      (a, b) =>
+        (a.spans[0]?.page ?? 0) - (b.spans[0]?.page ?? 0) ||
+        (a.spans[0]?.y ?? 0) - (b.spans[0]?.y ?? 0)
+    );
+    const first = cards[0];
+    if (!first) return;
+    this.selectEntry(first.id, "mark");
+    const page = first.spans[0]?.page;
+    if (page !== undefined) this.view?.surfaces.find((s) => s.index === page)?.el.scrollIntoView({ block: "center" });
   }
 
   // The full entity list as the app currently sees it, including any marks the

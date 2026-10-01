@@ -1,5 +1,6 @@
 import type { Mark, Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
+import type { ReviewGrade } from "../srs";
 import { icon } from "./icons";
 
 export interface PlayerItem {
@@ -14,11 +15,29 @@ export interface PlayerItem {
 export interface PlayerSource {
   loadPage(page: number, scale: number): Promise<PageImage | null>;
   marksFor(boxId: string): Mark[];
+  // What each grade would schedule for this card, already formatted for the
+  // button (e.g. "3d"). Returns null when the item is not a schedulable card,
+  // which hides the grade row.
+  preview?(id: string): Record<ReviewGrade, string> | null;
+  // Marks that reveal together with this card, dropped from the sitting when it
+  // is answered so one logical answer is not asked several times in a row.
+  siblingIds?(id: string): string[];
 }
 
 export interface PlayerHandlers {
   onClose(): void;
+  // A grade was chosen. Queue maintenance (advancing, burying siblings) is the
+  // player's job; the caller only records the review.
+  onGrade?(grade: ReviewGrade, id: string): void;
 }
+
+// Hardest first, so the row reads as a scale. Colour is applied in CSS.
+const GRADES: { grade: ReviewGrade; label: string }[] = [
+  { grade: "again", label: "Again" },
+  { grade: "hard", label: "Hard" },
+  { grade: "good", label: "Good" },
+  { grade: "easy", label: "Easy" }
+];
 
 const RENDER_SCALE = 2;
 
@@ -139,8 +158,36 @@ export class Player {
 
     foot.append(prev, reveal, next);
 
-    box.append(head, stage, foot);
+    // Grade buttons live under the nav row and only appear once the answer is
+    // shown, so a question is never graded sight-unseen.
+    const grades = document.createElement("div");
+    grades.className = "player-grades";
+    grades.id = "player-grades";
+
+    box.append(head, stage, foot, grades);
     this.root.append(backdrop, box);
+  }
+
+  private grade(g: ReviewGrade): void {
+    const item = this.current();
+    if (!item) return;
+    this.handlers.onGrade?.(g, item.id);
+
+    // Siblings of the answered card leave with it: a reveal group is one logical
+    // answer, so asking the rest in the same sitting is asking it again.
+    const gone = new Set<string>([item.id, ...(this.source.siblingIds?.(item.id) ?? [])]);
+    const remaining = this.items.filter((card) => !gone.has(card.id));
+
+    if (remaining.length === 0) {
+      this.close();
+      return;
+    }
+    // The answered card is gone, so whatever now sits at its index is next.
+    const nextIndex = Math.min(this.index, remaining.length - 1);
+    this.items = remaining;
+    this.index = nextIndex;
+    this.revealed = false;
+    void this.paint();
   }
 
   private step(delta: number): void {
@@ -171,6 +218,11 @@ export class Player {
     } else if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
       this.toggleReveal();
+    } else if (this.revealed && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) {
+      // Digits grade once the answer is showing, matching the button order.
+      const grade = (["again", "hard", "good", "easy"] as ReviewGrade[])[Number(e.key) - 1];
+      e.preventDefault();
+      this.grade(grade);
     }
   }
 
@@ -195,7 +247,40 @@ export class Player {
 
   private paintOverlayOnly(): void {
     this.syncRevealButton();
+    this.syncGrades();
     this.drawMarks();
+  }
+
+  // Builds the grade row for the current card, or clears it when there is
+  // nothing to grade. Rebuilt each paint so previews always reflect the card
+  // under the cursor and the workload the caller built the session with.
+  private syncGrades(): void {
+    const host = this.root.querySelector<HTMLElement>("#player-grades");
+    if (!host) return;
+    host.innerHTML = "";
+
+    const item = this.current();
+    // Grades appear only after reveal: grading a card you have not seen is a
+    // guess, and the preview numbers would be meaningless.
+    if (!item || !this.revealed) return;
+
+    const previews = this.source.preview?.(item.id) ?? null;
+    if (!previews) return;
+
+    for (const { grade, label } of GRADES) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = `player-grade grade-${grade}`;
+      const name = document.createElement("span");
+      name.className = "player-grade-label";
+      name.textContent = label;
+      const span = document.createElement("span");
+      span.className = "player-grade-interval";
+      span.textContent = previews[grade];
+      b.append(name, span);
+      b.addEventListener("click", () => this.grade(grade));
+      host.appendChild(b);
+    }
   }
 
   private async paint(): Promise<void> {
@@ -204,9 +289,10 @@ export class Player {
     const title = this.root.querySelector<HTMLElement>("#player-title");
     if (!canvas) return;
     if (title) title.textContent = `${item?.label || "question"} · ${this.index + 1}/${this.items.length}`;
-    // Update the control now; marks are drawn after the fresh crop lands so we
+    // Update the controls now; marks are drawn after the fresh crop lands so we
     // never paint the new question's marks over the previous question's image.
     this.syncRevealButton();
+    this.syncGrades();
     if (!item) {
       return;
     }

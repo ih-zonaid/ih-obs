@@ -694,6 +694,37 @@ body {
 .player-reveal { min-width: 130px; }
 .player-reveal.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 
+/* Grade row. Empty until the answer is revealed; the CSS grid simply collapses
+   to nothing when there are no children. */
+.player-grades {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.player-grades:empty { display: none; }
+.player-grade {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+}
+.player-grade:hover { border-color: var(--accent); }
+.player-grade-label { font-size: 12px; font-weight: 600; }
+.player-grade-interval { font-size: 11px; color: var(--fg-dim); }
+/* Cool as the answer gets easier, so the row reads as a scale. */
+.player-grade.grade-again { border-left: 3px solid #f43f5e; }
+.player-grade.grade-hard { border-left: 3px solid #f59e0b; }
+.player-grade.grade-good { border-left: 3px solid #22c55e; }
+.player-grade.grade-easy { border-left: 3px solid #7aa2f7; }
+
 .outline {
   background: var(--bg-2);
   overflow: auto;
@@ -774,6 +805,19 @@ body {
 .outline-chevron.empty { cursor: default; opacity: 0.5; }
 .outline-chevron.empty:hover { color: var(--fg-dim); background: none; }
 
+.outline-doc {
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
 .outline-count {
   flex: 0 0 auto;
   font-size: 10px;
@@ -781,6 +825,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .outline-count.none { color: #f7768e; }
+/* Deck badge: the actionable (due + new) count. Blue when there is work, dim
+   when the scope is only scheduled out into the future. */
+.outline-deck {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.outline-deck.due { color: var(--accent); opacity: 1; font-weight: 600; }
 .outline-page {
   flex: 0 0 auto;
   font-size: 10.5px;
@@ -816,14 +870,26 @@ body {
   padding: 1px 6px;
   outline: none;
 }
+/* Play is always visible: it is the primary action on a deck row. Dim until
+   the row is hovered/active, but never hidden, so the scope is discoverable. */
+.outline-play {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  color: var(--fg-dim);
+  opacity: 0.45;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.outline-row:hover .outline-play, .outline-row.active .outline-play { opacity: 0.85; }
+.outline-play.due { color: var(--accent); opacity: 1; }
 .outline-del { flex: 0 0 auto; padding: 0 4px; opacity: 0; }
-.outline-play { flex: 0 0 auto; padding: 0 3px; font-size: 9px; color: var(--fg-dim); opacity: 0; }
-.outline-row:hover .outline-del,
-.outline-row:hover .outline-play,
-.outline-row.active .outline-del,
-.outline-row.active .outline-play { opacity: 0.75; }
+.outline-row:hover .outline-del, .outline-row.active .outline-del { opacity: 0.75; }
 .outline-del:hover { color: var(--hl); opacity: 1; }
-.outline-play:hover { color: #9ece6a; opacity: 1; }
+.outline-play:hover { color: #9ece6a; opacity: 1; background: var(--bg); }
+/* The synthetic ungrouped deck row; distinct from real boxes. */
+.outline-row.loose .outline-name { color: var(--fg-dim); font-style: italic; }
 .outline-btn.active { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 .outline-btn[data-tool="concept"].active { background: #9ece6a; border-color: #9ece6a; }
 .outline-btn[data-tool="questions"].active { background: #ff9e64; border-color: #ff9e64; }

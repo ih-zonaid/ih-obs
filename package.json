@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "marked": "^12.0.2",
-    "pdfjs-dist": "^4.4.168"
+    "pdfjs-dist": "^4.4.168",
+    "ts-fsrs": "5.4.1"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

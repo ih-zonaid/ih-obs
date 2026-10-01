@@ -1,6 +1,13 @@
 import { buildOutlineTree, TAGS, type Entity, type OutlineNode } from "../store/schema";
+import type { DeckCounts } from "../srs";
 import type { DrawTool } from "./segmentDraw";
 import { icon, type IconName } from "./icons";
+
+// Pseudo-id for the page-scoped cards that no box contains. The app owns the
+// review rows; this is only the scope key the outline hands back on play.
+export const UNGROUPED_DECK = "__ungrouped__";
+
+const NO_DECK: DeckCounts = { due: 0, fresh: 0, seen: 0, total: 0 };
 
 type BoxTag = "frame" | "concept" | "questions" | "question" | "other";
 
@@ -30,11 +37,31 @@ export interface OutlineHandlers {
   onAutoSegment(): void;
   onSplitApply(): void;
   onSplitCancel(): void;
-  onPlay(id: string): void;
+  // `scope` tells the app what the row means: a `question` box or `frame` plays
+  // its own contained cards, anything else (`deck`) plays the card marks in the
+  // row's subtree. The `UNGROUPED_DECK` id is the page-scoped cards no box owns.
+  onPlay(id: string, scope: "deck" | "question" | "frame"): void;
   onClear(): void;
+  // Recomputes deck counts for the current entities. Called whenever the review
+  // state may have changed (a grade, opening a document).
+  decks?(): Map<string, DeckCounts>;
+  // Reveals a card mark by id (outline row hidden, so it needs an app path).
+  onBrowseDeck?(id: string): void;
+  // On-disk path of the document, shown beside the outline title.
+  docPath?(): string;
   // Opens (or creates) the note for an entry from its row badge.
   onNote?(id: string, kind: "box" | "mark", x: number, y: number): void;
   hasNote?(id: string): boolean;
+}
+
+// A scope row's play verb and its tooltip, derived from its role.
+function playVerb(role: BoxTag, counts: DeckCounts, isMarker: boolean): string {
+  if (isMarker) return "play cards under this anchor";
+  if (role === "concept") return counts.total ? "play this concept's cards" : "no cards";
+  if (role === "questions") return "play cards in this section";
+  if (role === "question") return "play this question";
+  if (role === "frame") return "play cards in this frame";
+  return "play cards here";
 }
 
 const TOOLS: DrawTool[] = ["concept", "questions", "question", "frame", "marker", "split"];
@@ -50,6 +77,9 @@ export class Outline {
   private readonly rows = new Map<string, HTMLElement>();
   private counts = new Map<string, number>();
   private showCounts = false;
+  private decks = new Map<string, DeckCounts>();
+  // True when any scope has cards, i.e. the deck badges are worth showing.
+  private hasDecks = false;
 
   constructor(root: HTMLElement, handlers: OutlineHandlers) {
     this.root = root;
@@ -67,6 +97,16 @@ export class Outline {
   render(entities: Entity[]): void {
     this.entities = entities;
     this.rows.clear();
+    // Pull deck counts before drawing so badges are correct in one pass. The
+    // handler reads from cache, so this stays synchronous.
+    this.decks = this.handlers.decks?.() ?? new Map();
+    this.hasDecks = false;
+    for (const counts of this.decks.values()) {
+      if (counts.total > 0) {
+        this.hasDecks = true;
+        break;
+      }
+    }
     this.root.innerHTML = "";
     const tree = buildOutlineTree(this.entities);
     this.root.appendChild(this.head(this.countNodes(tree)));
@@ -89,6 +129,14 @@ export class Outline {
     title.className = "outline-title";
     title.textContent = `Outline · ${count}`;
     row.appendChild(title);
+    const doc = this.handlers.docPath?.();
+    if (doc) {
+      const hint = document.createElement("div");
+      hint.className = "outline-doc";
+      hint.textContent = doc.split("/").pop() ?? doc;
+      hint.title = doc;
+      row.appendChild(hint);
+    }
     const expand = this.btn("expand", "expand all", () => {
       this.collapsed.clear();
       this.render(this.entities);
@@ -137,10 +185,10 @@ export class Outline {
 
     const actions = document.createElement("div");
     actions.className = "outline-actions";
+    const play = this.btn("play", "play the selected row", () => this.playActive());
+    play.disabled = !this.active;
     actions.append(
-      this.btn("play", "play questions one at a time", () =>
-        this.handlers.onPlay(this.active ?? "")
-      ),
+      play,
       this.btn("auto", "auto-segment the selected questions container", () =>
         this.handlers.onAutoSegment()
       ),
@@ -151,16 +199,72 @@ export class Outline {
   }
 
   private list(tree: OutlineNode[]): HTMLElement {
-    if (!tree.length) {
+    const list = document.createElement("div");
+    list.className = "outline-list";
+    // Cards no box contains (page-scoped) get their own row, or they would be
+    // invisible as a deck: they appear in no subtree, so they contribute to no
+    // ancestor's count.
+    const loose = this.decks.get(UNGROUPED_DECK) ?? NO_DECK;
+    if (loose.total > 0) list.appendChild(this.ungroupedRow(loose));
+    for (const node of tree) this.appendNode(list, node);
+
+    if (!tree.length && loose.total === 0) {
       const hint = document.createElement("div");
       hint.className = "outline-hint";
       hint.textContent = "Nothing yet. Pick a tool above, then draw a box or place an anchor line.";
-      return hint;
+      list.appendChild(hint);
     }
-    const list = document.createElement("div");
-    list.className = "outline-list";
-    for (const node of tree) this.appendNode(list, node);
     return list;
+  }
+
+  // The synthetic root for free-floating cards. Not editable or deletable — it
+  // owns no entity — only playable and countable.
+  private ungroupedRow(counts: DeckCounts): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "outline-row loose";
+    row.dataset.id = UNGROUPED_DECK;
+
+    const gutter = document.createElement("div");
+    gutter.className = "outline-gutter";
+    const chevron = document.createElement("span");
+    chevron.className = "outline-chevron empty";
+    chevron.textContent = "•";
+    gutter.appendChild(chevron);
+    row.appendChild(gutter);
+
+    const mark = document.createElement("span");
+    mark.className = "outline-mark";
+    mark.textContent = "◇";
+    row.appendChild(mark);
+
+    const name = document.createElement("span");
+    name.className = "outline-name";
+    name.textContent = "Ungrouped cards";
+    name.title = "cards no box contains";
+    row.appendChild(name);
+
+    const badge = document.createElement("span");
+    const actionable = counts.due + counts.fresh;
+    badge.className = "outline-deck" + (actionable ? " due" : "");
+    badge.textContent = `◇${actionable}`;
+    badge.title = `${counts.due} due · ${counts.fresh} new · ${counts.seen} scheduled · ${counts.total} card(s)`;
+    row.appendChild(badge);
+
+    const play = document.createElement("span");
+    play.className = "outline-play";
+    if (actionable) play.classList.add("due");
+    play.appendChild(icon("play", 11));
+    play.title = actionable ? "play ungrouped cards" : "no cards due";
+    play.setAttribute("role", "button");
+    play.setAttribute("aria-label", play.title);
+    play.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.handlers.onPlay(UNGROUPED_DECK, "deck");
+    });
+    row.appendChild(play);
+
+    row.addEventListener("click", () => this.handlers.onBrowseDeck?.(UNGROUPED_DECK));
+    return row;
   }
 
   private appendNode(parent: HTMLElement, node: OutlineNode): void {
@@ -241,6 +345,20 @@ export class Outline {
       row.appendChild(badge);
     }
 
+    // Deck badge: due + new are the actionable numbers, so they are the whole
+    // badge and go blue when non-zero. Total is the tooltip's job.
+    const deck = this.decks.get(node.id) ?? NO_DECK;
+    if (this.hasDecks && deck.total > 0) {
+      const badge = document.createElement("span");
+      const actionable = deck.due + deck.fresh;
+      badge.className = "outline-deck" + (actionable ? " due" : "");
+      badge.textContent = `◇${actionable}`;
+      badge.title =
+        `${deck.due} due · ${deck.fresh} new · ${deck.seen} scheduled · ${deck.total} card(s)` +
+        (isMarker ? " (this anchor's subtree)" : "");
+      row.appendChild(badge);
+    }
+
     if (this.handlers.hasNote?.(node.id)) {
       const note = document.createElement("span");
       note.className = "outline-note-badge";
@@ -273,28 +391,59 @@ export class Outline {
     });
     row.appendChild(del);
 
-    if (role === "questions" || role === "question" || role === "frame") {
-      const play = document.createElement("span");
-      play.className = "outline-play";
-      play.appendChild(icon("play", 11));
-      play.title =
-        role === "questions"
-          ? "play questions inside"
-          : role === "frame"
-            ? "play cards in this frame"
-            : "play this question";
-      play.setAttribute("role", "button");
-      play.setAttribute("aria-label", play.title);
-      play.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        this.handlers.onPlay(node.id);
-      });
-      row.insertBefore(play, del);
-    }
+    // Every row can play its subtree's cards, so every row gets a play button.
+    // Rows with nothing under them still show it (dimmed) rather than shifting
+    // the layout as cards are added; the tooltip says so.
+    const scope = this.scopeFor(role, isMarker);
+    const counts = this.decks.get(node.id) ?? NO_DECK;
+    const play = document.createElement("span");
+    play.className = "outline-play";
+    if (counts.due + counts.fresh > 0) play.classList.add("due");
+    play.appendChild(icon("play", 11));
+    play.title = playVerb(role ?? "other", counts, isMarker);
+    play.setAttribute("role", "button");
+    play.setAttribute("aria-label", play.title);
+    play.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.handlers.onPlay(node.id, scope);
+    });
+    row.insertBefore(play, del);
 
     row.addEventListener("click", () => this.handlers.onSelect(node.id, "box"));
     this.rows.set(node.id, row);
     return row;
+  }
+
+  // Frame and question rows play their own cards; a concept/marker/other plays
+  // its whole subtree as a deck. Question boxes keep the legacy behaviour so
+  // their grade row still works card-by-card.
+  private scopeFor(role: BoxTag | undefined, isMarker: boolean): "deck" | "question" | "frame" {
+    if (isMarker) return "deck";
+    if (role === "question") return "question";
+    if (role === "frame") return "frame";
+    return "deck";
+  }
+
+  private playActive(): void {
+    if (!this.active) return;
+    const node = this.find(this.active);
+    if (!node) return;
+    const role = node.tags.find((t): t is BoxTag =>
+      t === "frame" || t === "concept" || t === "questions" || t === "question" || t === "other"
+    );
+    this.handlers.onPlay(node.id, this.scopeFor(role, node.tags.includes(TAGS.anchor)));
+  }
+
+  private find(id: string): OutlineNode | null {
+    const search = (nodes: OutlineNode[]): OutlineNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node;
+        const hit = search(node.children);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return search(buildOutlineTree(this.entities));
   }
 
   private toggleCollapse(id: string): void {
@@ -378,6 +527,7 @@ export class Outline {
     const name = OUTLINE_ICONS[kind];
     if (name) b.appendChild(icon(name, 13));
     else b.textContent = kind;
+    b.type = "button";
     b.title = title;
     b.setAttribute("aria-label", title);
     b.addEventListener("click", onClick);
@@ -392,5 +542,9 @@ export class Outline {
     for (const [rowId, el] of this.rows) {
       el.classList.toggle("active", rowId === id);
     }
+    // The header Play button follows the selection; update it in place too.
+    this.root.querySelectorAll<HTMLButtonElement>('.outline-btn[data-action="play"]').forEach((b) => {
+      b.disabled = !id;
+    });
   }
 }
