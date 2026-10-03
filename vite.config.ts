@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import { copyFileSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { writePwa } from "./build/pwa";
 
 const OUT = "dist";
 
@@ -63,6 +64,9 @@ export default defineConfig({
           const emitted = readdirSync(assets).find((f) => f.startsWith("pdf.worker"));
           if (emitted) copyFileSync(resolve(assets, emitted), resolve(out, "pdf.worker.min.mjs"));
         }
+
+        // Last, so the shell list and its content hash cover everything above.
+        writePwa(out);
       }
     }
   ]

@@ -444,6 +444,12 @@ export class App {
     // The page tone is only meaningful on a dark app theme; mirror that onto
     // the shell so the CSS page-tint rules can key off it.
     this.shell.root.dataset.pageTheme = theme;
+    // An installed window's chrome follows the app theme, not the OS setting:
+    // the toggle is explicit and stored, so prefers-color-scheme would be wrong
+    // for anyone who picked the other one.
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "dark" ? "#16181d" : "#ffffff");
   }
 
   private async toggleTheme(): Promise<void> {

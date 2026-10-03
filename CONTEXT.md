@@ -262,6 +262,7 @@ src/ui/           toolbar, explorer, home, vaultHub, palette, outline,
 src/vault/        fs.ts (FileSystem API helpers), tree.ts (walk + type predicates),
                   types.ts (path helpers)
 src/host/         idb.ts (vault handle registry), dom.d.ts (extra DOM typings)
+build/            pwa.ts (web app manifest, generated icons, service worker)
 ```
 
 ## 7. Persistence & storage
@@ -279,6 +280,14 @@ src/host/         idb.ts (vault handle registry), dom.d.ts (extra DOM typings)
   `chrome.storage.local` if present) via `src/store/kv.ts`.
   Per-vault pref keys: `ihobs:prefs:<vaultId>`.
 - **Vault handles / current vault**: IndexedDB (`src/host/idb.ts`).
+- **Offline shell**: a service worker precaches `index.html`, `assets/*` and the
+  pdf worker into a cache named for a hash of their contents. The app reads its
+  vault from disk handles and fetches nothing at runtime, so a cached shell plus
+  a granted handle is a fully offline session. Two consequences worth knowing:
+  - Nothing is cached in dev — the worker would shadow HMR — so the offline path
+    is only observable through `npm run build && npx vite preview`.
+  - `chrome-extension://` pages cannot register a worker, so the extension build
+    gets its offline behaviour from being local, not from this cache.
 
 ## 8. Adapters (how documents load)
 
@@ -316,6 +325,10 @@ npm run build      # tsc --noEmit && vite build
 npm run typecheck  # tsc --noEmit
 ```
 
+The web app is installable (PWA). `vite build` also emits `webmanifest.json`,
+`sw.js` and `icons/`; install and offline behaviour can only be exercised against
+a served build (`npx vite preview`), never the dev server.
+
 ## 11. Schema version history
 
 - **v6 (current):** two generic entities (`Box`, `Mark`) in one `entities[]`
@@ -334,5 +347,11 @@ npm run typecheck  # tsc --noEmit
   splitting manually is the fallback.
 - No OCR in-house — relies on the PDF already having a text layer for
   selection-based marks.
+- The installed web app is **desktop Chromium only**. Safari and Firefox have no
+  File System Access API, so `showDirectoryPicker` is absent and no vault can be
+  opened there; the extension is the fallback on those browsers. Whether a
+  directory handle survives a cold start also varies by platform and by whether
+  the user chose "Allow on every visit" — the hub's permission re-request flow
+  is the answer when it does not, and it works offline.
 - Folder names like `hoguth` in prompts are typos for "thought" — this doc is the
   source of truth for intent.
