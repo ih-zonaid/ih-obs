@@ -57,6 +57,9 @@ export class Overlay {
   private lineDefault: "none" | MarkKind = "none";
   private static readonly BAND_MIN = 0.01;
   private static readonly BAND_MAX = 0.3;
+  // Browsers refuse cursor images past 128x128 and silently fall back to the
+  // keyword, so the band-height I-beam is capped just under that.
+  private static readonly CURSOR_MAX = 120;
   // Per '[' / ']' keypress, as a fraction of page height.
   private static readonly BAND_STEP = 0.006;
   private hoverGhost: HTMLElement | null = null;
@@ -141,10 +144,17 @@ export class Overlay {
     this.updateCursor();
   }
 
-  // The line tool's cursor is a vertical double-arrow whose height matches the
-  // band, so you can see the line height under the pointer. Built here (not in
-  // CSS) because the height changes with '[' / ']'; the hotspot is the arrow's
-  // center, so the band centers on the pointer.
+  // The line tool's cursor is an I-beam — the same glyph as a text caret — but
+  // stretched to the band's height, so the pointer itself shows how tall the
+  // highlight will be: the two serifs sit on the band's top and bottom edges and
+  // the stem spans it. The hotspot is the stem's centre, so the band centres on
+  // the pointer. Built here rather than in CSS because the height changes with
+  // '[' / ']'.
+  //
+  // Browsers ignore cursor images over 128x128 outright (they do not scale them
+  // down), so past CURSOR_MAX the I-beam stops growing and `text` — the keyword
+  // fallback — is what shows. For those tall bands the hover preview band
+  // (hoverMove) is the honest cue, which is why it is kept.
   private updateCursor(): void {
     if (this.mode !== "line") {
       for (const layer of this.layers.values()) layer.style.cursor = "";
@@ -152,15 +162,20 @@ export class Overlay {
     }
     const first = this.surfaces[0];
     const pageH = first ? this.surfaceSize(first.index).h : 800;
-    const px = Math.max(16, Math.min(120, Math.round(this.bandHeight * pageH)));
+    const px = Math.max(16, Math.min(Overlay.CURSOR_MAX, Math.round(this.bandHeight * pageH)));
     const w = 16;
-    const d = `M8 4 V${px - 4} M3 7 L8 2 L13 7 M3 ${px - 7} L8 ${px - 2} L13 ${px - 7}`;
+    // Half the 4px stroke, so the serifs' outer edges land on the bitmap's edges
+    // and therefore on the band's edges.
+    const pad = 2;
+    const d =
+      `M3 ${pad} H${w - 3} M${w / 2} ${pad} V${px - pad} M3 ${px - pad} H${w - 3}`;
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${px}" viewBox="0 0 ${w} ${px}">` +
       `<path d="${d}" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>` +
       `<path d="${d}" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` +
       `</svg>`;
-    const cur = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 ${Math.round(px / 2)}, crosshair`;
+    const cur =
+      `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${w / 2} ${Math.round(px / 2)}, text`;
     for (const layer of this.layers.values()) layer.style.cursor = cur;
   }
 

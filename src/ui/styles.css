@@ -446,11 +446,13 @@ body {
   pointer-events: auto;
   cursor: crosshair;
 }
-/* Line tool: the vertical ↕ height cursor is generated in JS (overlay.ts,
-   updateCursor) because its height tracks the band. This class remains as a
-   hook for that state. */
+/* Line tool: an I-beam, like the text-layer selection cursor, because the tool's
+   whole job is stamping one text line at a time. JS replaces it (overlay.ts,
+   updateCursor) with an I-beam stretched to the band's height; this rule is the
+   fallback for bands too tall to draw, since browsers ignore cursor images over
+   128x128 rather than scaling them. */
 .ihobs-overlay.is-line {
-  cursor: ns-resize;
+  cursor: text;
 }
 /* Tool-owns-pointer: transparent to gestures while another tool is active. */
 .ihobs-overlay.click-through,
@@ -468,9 +470,13 @@ body {
   opacity: 0.55;
   border: 1px dashed var(--accent);
 }
-/* Line tool's pre-swipe preview: fainter than an active drag since nothing
-   is committed yet, just showing which row/height would be stamped. */
-.ihobs-region.ghost.hover-line { opacity: 0.22; }
+/* Line tool's pre-swipe preview: nothing is committed yet, so it is a tint plus
+   a dashed rule rather than a solid cover. It is also what shows the true band
+   height once the cursor hits its bitmap limit and stops growing. */
+.ihobs-region.ghost.hover-line {
+  opacity: 0.38;
+  background: rgba(122, 162, 247, 0.2);
+}
 .ihobs-region.occlusion { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
 /* A revealed occlusion drops its fill but keeps a dashed outline, so the spot
    still reads as "there is an answer here" and can be clicked to cover again. */

@@ -21,6 +21,10 @@ export interface ToolbarHandlers {
   onToggleExplorer(): void;
   onToggleOutline(): void;
   onToggleNotes(): void;
+  // Right-click on a tool button opens that tool's options at the pointer. The
+  // toolbar passes the button's data-action so the app can route it; tools with
+  // no options simply never register a context handler and never emit this.
+  onToolMenu?(action: string, x: number, y: number): void;
 }
 
 // PDF text-layer debug levels: 0 off, 1 outline glyph boxes, 2 also show glyphs.
@@ -151,8 +155,8 @@ export class Toolbar {
     );
     const line = this.iconCtrl(
       "line-band",
-      "line tool: swipe sideways to mark a line — [ / ] resizes the band; right-click the line to set it as occlusion or highlight",
-      { action: "line", label: "line tool" },
+      "line tool: swipe sideways to mark a line — [ / ] resizes the band; right-click for options",
+      { action: "line", label: "line tool", options: true },
       () => this.setMode("line")
     );
     const inspect = this.iconCtrl(
@@ -255,11 +259,13 @@ export class Toolbar {
 
   // Builds an icon control and wires the small amount of metadata the rest of
   // the toolbar depends on (data-action for state sync, data-label for the
-  // overflow popover, extra classes for visibility hooks).
+  // overflow popover, extra classes for visibility hooks). `meta.options`
+  // marks the control as having right-click options, which routes a
+  // contextmenu gesture to the app's onToolMenu handler.
   private iconCtrl(
     name: IconName,
     title: string,
-    meta: { action?: string; extra?: string; label?: string },
+    meta: { action?: string; extra?: string; label?: string; options?: boolean },
     onClick: () => void
   ): HTMLButtonElement {
     const b = document.createElement("button");
@@ -270,6 +276,17 @@ export class Toolbar {
     b.setAttribute("aria-label", title);
     b.appendChild(icon(name));
     b.addEventListener("click", onClick);
+    // A right-click on a tool with options opens its menu instead of the
+    // browser's; left-click still toggles the tool. Only controls flagged
+    // `options` suppress the native menu, so unrelated icons keep it.
+    if (meta.options) {
+      b.addEventListener("contextmenu", (e) => {
+        if (!meta.action) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.h.onToolMenu?.(meta.action, e.clientX, e.clientY);
+      });
+    }
     return b;
   }
 

@@ -37,6 +37,7 @@ import {
   DEFAULT_OCCLUSION_COLOR,
   DEFAULT_RULES,
   HIGHLIGHT_COLOR,
+  containsMark,
   containsSpan,
   frames,
   isAnchor,
@@ -407,7 +408,8 @@ export class App {
       onToggleTextDebug: () => this.applyTextDebug(),
       onToggleExplorer: () => this.toggleExplorer(),
       onToggleOutline: () => this.toggleRail("outline"),
-      onToggleNotes: () => this.toggleRail("notes")
+      onToggleNotes: () => this.toggleRail("notes"),
+      onToolMenu: (action, x, y) => this.openToolMenu(action, x, y)
     });
   }
 
@@ -1044,6 +1046,13 @@ export class App {
     if (kind === "box") {
       const box = entry as Box;
       if (isFrame(box)) {
+        const inside = this.frameCandidateMarks(box);
+        items.push({
+          label: "Make cards from marks inside",
+          hint: `${inside.length} mark${inside.length === 1 ? "" : "s"}`,
+          disabled: inside.length === 0,
+          onSelect: () => this.cardsFromFrame(box.id)
+        });
         items.push({
           label: "Play cards in frame",
           hint: "flashcards",
@@ -1207,7 +1216,7 @@ export class App {
     items.push({
       label: "Clear frame",
       disabled: !mark.card.frame,
-      onSelect: () => this.setCardContext(mark.id, undefined)
+      onSelect: () => this.setCardContext(mark.id, undefined, null)
     });
     const frameBoxes = frames(this.boxes());
     for (const f of frameBoxes) {
@@ -1241,14 +1250,21 @@ export class App {
     return box;
   }
 
-  // `undefined` leaves an existing card's context alone; `null` clears it.
-  private setCardContext(markId: string, context: string | null | undefined, frame?: string): void {
+  // `undefined` leaves a field alone; `null` clears it. Clearing needs its own
+  // case because a setter that only ever assigned would make "Clear frame" a
+  // no-op — it would rewrite the card exactly as it already was.
+  private setCardContext(
+    markId: string,
+    context: string | null | undefined,
+    frame?: string | null
+  ): void {
     const mark = this.markById(markId);
     if (!mark) return;
     const card: Card = { ...(mark.card ?? {}) };
     if (context === null) delete card.context;
     else if (context !== undefined) card.context = context;
-    if (frame !== undefined) card.frame = frame;
+    if (frame === null) delete card.frame;
+    else if (frame !== undefined) card.frame = frame;
     mark.card = card;
     this.overlay?.repaint();
     void this.persist();
@@ -1265,6 +1281,44 @@ export class App {
     // A mark that is no longer a card has no schedule to keep. The mark itself
     // stays; only its review row goes.
     if (!card) void this.dropReviewRows([markId]);
+    this.refreshOutline();
+  }
+
+  // The frame a card is really clipped by, or null when it is not clipped at all.
+  // A card stores the frame's *id*, so deleting that frame leaves the id behind.
+  // Such a card would otherwise be invisible to every frame's deck (they match on
+  // exact id) and skipped by the bulk action below — while `cardCrop` already
+  // ignores a frame it cannot resolve. Treating an unresolvable id as no clip
+  // makes deck membership and adoption agree with what the crop already does.
+  private liveFrameIdOf(mark: Mark): string | null {
+    const id = mark.card?.frame;
+    if (!id) return null;
+    const box = this.boxById(id);
+    return box && isFrame(box) ? id : null;
+  }
+
+  // Marks a bulk "make cards" over a frame would adopt: everything geometrically
+  // inside it that no frame already clips. A mark already framed by another frame
+  // keeps its clip — the same non-destructive rule ownership follows — so nesting
+  // one frame inside another never steals the inner frame's cards.
+  private frameCandidateMarks(frame: Box): Mark[] {
+    return this.allEntities()
+      .filter(isMark)
+      .filter((m) => this.liveFrameIdOf(m) === null && containsMark(frame, m));
+  }
+
+  // Bulk authoring: every mark inside a frame becomes a card clipped by it. The
+  // question side is left to the default band; clipped to the frame that band is
+  // exactly the frame's slice at the mark's height, which is what occluding one
+  // line of a scanned column wants — no per-card context to assign by hand.
+  private cardsFromFrame(frameId: string): void {
+    const frame = this.boxById(frameId);
+    if (!frame) return;
+    for (const mark of this.frameCandidateMarks(frame)) {
+      mark.card = { ...(mark.card ?? {}), frame: frame.id };
+    }
+    this.overlay?.repaint();
+    void this.persist();
     this.refreshOutline();
   }
 
@@ -2016,6 +2070,15 @@ export class App {
 
   private openLineSettings(clientX: number, clientY: number): void {
     this.openLineMenu(clientX, clientY, false);
+  }
+
+  // Routes a toolbar button's right-click to that tool's options. Only tools
+  // that carry an `options` flag in the toolbar (and thus suppress the native
+  // context menu) reach here; adding options to another tool is a new case
+  // below plus that flag. The line tool reuses the same menu as the page
+  // right-click, so the two entry points can't drift apart.
+  private openToolMenu(action: string, clientX: number, clientY: number): void {
+    if (action === "line") this.openLineSettings(clientX, clientY);
   }
 
   private openLineMenu(clientX: number, clientY: number, withDraft: boolean): void {
