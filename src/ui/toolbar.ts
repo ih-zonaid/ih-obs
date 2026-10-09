@@ -159,6 +159,12 @@ export class Toolbar {
       { action: "line", label: "line tool", options: true },
       () => this.setMode("line")
     );
+    const pen = this.iconCtrl(
+      "pen",
+      "pen: draw freehand ink on the page — right-click for color and size",
+      { action: "ink", label: "pen", options: true },
+      () => this.setMode("ink")
+    );
     const inspect = this.iconCtrl(
       "target",
       "inspect: show each mark's resolved owner",
@@ -222,6 +228,7 @@ export class Toolbar {
     this.addItem(occlude, true);
     this.addItem(highlight, true);
     this.addItem(line, true);
+    this.addItem(pen, true);
     this.addItem(inspect, true);
     this.addItem(reveal, true);
     this.addItem(hideAll, true);
@@ -500,7 +507,7 @@ export class Toolbar {
     this.root.querySelectorAll(".tb-btn").forEach((el) => {
       const btn = el as HTMLButtonElement;
       const action = btn.dataset.action;
-      if (action === "occlude" || action === "highlight" || action === "line") {
+      if (action === "occlude" || action === "highlight" || action === "line" || action === "ink") {
         btn.classList.toggle("active", action === this.mode);
       }
     });

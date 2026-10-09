@@ -1,4 +1,4 @@
-import type { Mark, Span } from "../store/schema";
+import { hexToRgba, INK_COLOR, INK_WEIGHT, isInk, type Mark, type Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
 import type { ReviewGrade } from "../srs";
 import { icon } from "./icons";
@@ -10,11 +10,18 @@ export interface PlayerItem {
   // Crop rectangle for the card's question side. Defaults to the span when a
   // caller does not supply a derived crop (questions, frame-scoped cards).
   crop?: Span | null;
+  // The frame a card crop is clipped by. The up/down context controls expand
+  // the crop within it, so revealing extra lines never leaks the other column.
+  bounds?: Span | null;
 }
 
 export interface PlayerSource {
   loadPage(page: number, scale: number): Promise<PageImage | null>;
   marksFor(boxId: string): Mark[];
+  // Neighbouring marks visible in a card's crop, drawn in a neutral grey behind
+  // the focused card so they stay occluded without competing with the answer.
+  // Card play supplies these; question play leaves it undefined.
+  contextMarks?(id: string, crop: Span): Mark[];
   // What each grade would schedule for this card, already formatted for the
   // button (e.g. "3d"). Returns null when the item is not a schedulable card,
   // which hides the grade row.
@@ -40,6 +47,13 @@ const GRADES: { grade: ReviewGrade; label: string }[] = [
 ];
 
 const RENDER_SCALE = 2;
+// How much page height one press of the context up/down button reveals, and the
+// cap on each side so a card can never grow into the whole page.
+const CONTEXT_STEP = 0.02;
+const CONTEXT_MAX = 0.5;
+// Neighbouring marks in the crop are painted this flat grey so they stay
+// occluded but do not compete with the focused answer's own colour.
+const CONTEXT_COLOR = "#9ca3af";
 
 export class Player {
   private readonly root: HTMLElement;
@@ -50,9 +64,16 @@ export class Player {
   private revealed = false;
   private open = false;
   private renderToken = 0;
+  // Extra context revealed above/below a card's base crop, as page-normalized
+  // fractions. Reset on every navigation; expanded by the up/down controls.
+  private padUp = 0;
+  private padDown = 0;
   // The cropped page image without marks. Every paint starts from this so
   // hiding an occlusion truly erases it instead of drawing over the last frame.
   private baseCanvas: HTMLCanvasElement | null = null;
+  // Full rasterized page for the current item, cached for the context controls.
+  private fullCanvas: HTMLCanvasElement | null = null;
+  private fullPage = -1;
   // CSS filter applied to the page crop at paint time (page-tone setting). Set
   // before drawing the base so the marks drawn afterwards keep their colours.
   private pageFilter = "none";
@@ -84,6 +105,7 @@ export class Player {
     this.items = items;
     this.index = 0;
     this.revealed = false;
+    this.resetContext();
     this.baseCanvas = null;
     this.open = true;
     this.root.classList.remove("hidden");
@@ -93,6 +115,9 @@ export class Player {
 
   close(): void {
     this.open = false;
+    this.baseCanvas = null;
+    this.fullCanvas = null;
+    this.fullPage = -1;
     this.root.classList.add("hidden");
     this.root.innerHTML = "";
     this.handlers.onClose();
@@ -138,6 +163,14 @@ export class Player {
     prev.setAttribute("aria-label", "previous");
     prev.addEventListener("click", () => this.step(-1));
 
+    const up = document.createElement("button");
+    up.className = "tb-btn player-context";
+    up.id = "player-context-up";
+    up.title = "reveal line above (↑)";
+    up.setAttribute("aria-label", "reveal context above");
+    up.appendChild(icon("arrow-up", 15));
+    up.addEventListener("click", () => this.growContext("up"));
+
     const reveal = document.createElement("button");
     reveal.className = "tb-btn player-reveal";
     reveal.id = "player-reveal";
@@ -149,6 +182,14 @@ export class Player {
     reveal.appendChild(revealLabel);
     reveal.addEventListener("click", () => this.toggleReveal());
 
+    const down = document.createElement("button");
+    down.className = "tb-btn player-context";
+    down.id = "player-context-down";
+    down.title = "reveal line below (↓)";
+    down.setAttribute("aria-label", "reveal context below");
+    down.appendChild(icon("arrow-down", 15));
+    down.addEventListener("click", () => this.growContext("down"));
+
     const next = document.createElement("button");
     next.className = "tb-btn player-nav";
     next.appendChild(icon("chevron-right", 16));
@@ -156,7 +197,7 @@ export class Player {
     next.setAttribute("aria-label", "next");
     next.addEventListener("click", () => this.step(1));
 
-    foot.append(prev, reveal, next);
+    foot.append(prev, up, reveal, down, next);
 
     // Grade buttons live under the nav row and only appear once the answer is
     // shown, so a question is never graded sight-unseen.
@@ -187,6 +228,7 @@ export class Player {
     this.items = remaining;
     this.index = nextIndex;
     this.revealed = false;
+    this.resetContext();
     void this.paint();
   }
 
@@ -196,12 +238,50 @@ export class Player {
     this.index = next;
     // Navigating always hides the answer again, so each question starts covered.
     this.revealed = false;
+    this.resetContext();
     void this.paint();
+  }
+
+  private resetContext(): void {
+    this.padUp = 0;
+    this.padDown = 0;
   }
 
   private toggleReveal(): void {
     this.revealed = !this.revealed;
     this.paintOverlayOnly();
+  }
+
+  // Grows the crop on one side by one step, clamped by the card's frame (when it
+  // has one) so context reveal can never spill into the neighbouring column.
+  private growContext(side: "up" | "down"): void {
+    const item = this.current();
+    if (!item) return;
+    const base = item.crop ?? item.span;
+    if (!base) return;
+    const bounds = item.bounds ?? null;
+    if (side === "up") {
+      const limit = bounds ? base.y - bounds.y : base.y;
+      this.padUp = Math.min(CONTEXT_MAX, this.padUp + CONTEXT_STEP, Math.max(0, limit));
+    } else {
+      const limit = bounds ? bounds.y + bounds.h - (base.y + base.h) : 1 - (base.y + base.h);
+      this.padDown = Math.min(CONTEXT_MAX, this.padDown + CONTEXT_STEP, Math.max(0, limit));
+    }
+    void this.paint();
+  }
+
+  // The crop actually shown: the card's base crop expanded by the context pads,
+  // clipped to the page and (when the card has one) to its frame.
+  private effectiveCrop(item: PlayerItem): Span | null {
+    const base = item.crop ?? item.span;
+    if (!base) return null;
+    if (!this.padUp && !this.padDown) return base;
+    const bounds = item.bounds;
+    const minY = bounds ? bounds.y : 0;
+    const maxY = bounds ? bounds.y + bounds.h : 1;
+    const y0 = Math.max(minY, base.y - this.padUp);
+    const y1 = Math.min(maxY, base.y + base.h + this.padDown);
+    return { ...base, y: y0, h: y1 - y0 };
   }
 
   private key(e: KeyboardEvent): void {
@@ -215,6 +295,12 @@ export class Player {
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       this.step(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      this.growContext("up");
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      this.growContext("down");
     } else if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
       this.toggleReveal();
@@ -302,26 +388,21 @@ export class Player {
       return;
     }
 
+    const span = this.effectiveCrop(item) ?? item.span;
     const token = ++this.renderToken;
-    const span = item.crop ?? item.span;
     this.baseCanvas = null;
-    const image = await this.source.loadPage(span.page, RENDER_SCALE);
+    const full = await this.fullPageCanvas(span.page);
     if (token !== this.renderToken || !this.open) return;
-    if (!image) {
+    if (!full) {
       canvas.width = 1;
       canvas.height = 1;
       return;
     }
 
-    const sx = Math.round(span.x * image.width);
-    const sy = Math.round(span.y * image.height);
-    const sw = Math.max(1, Math.round(span.w * image.width));
-    const sh = Math.max(1, Math.round(span.h * image.height));
-
-    const full = document.createElement("canvas");
-    full.width = image.width;
-    full.height = image.height;
-    full.getContext("2d")?.putImageData(image.image, 0, 0);
+    const sx = Math.round(span.x * full.width);
+    const sy = Math.round(span.y * full.height);
+    const sw = Math.max(1, Math.round(span.w * full.width));
+    const sh = Math.max(1, Math.round(span.h * full.height));
 
     const base = document.createElement("canvas");
     base.width = sw;
@@ -334,12 +415,37 @@ export class Player {
     this.drawMarks();
   }
 
+  // The full rasterized page, cached so the up/down context controls only
+  // re-slice instead of re-rasterizing on every press.
+  private async fullPageCanvas(page: number): Promise<HTMLCanvasElement | null> {
+    if (this.fullCanvas && this.fullPage === page) return this.fullCanvas;
+    const image = await this.source.loadPage(page, RENDER_SCALE);
+    if (!image) return null;
+    const full = document.createElement("canvas");
+    full.width = image.width;
+    full.height = image.height;
+    full.getContext("2d")?.putImageData(image.image, 0, 0);
+    this.fullCanvas = full;
+    this.fullPage = page;
+    return full;
+  }
+
+  // Paints a mark's span into the crop's canvas space.
+  private markRect(span: Span, s: Span, canvas: HTMLCanvasElement): [number, number, number, number] {
+    return [
+      ((s.x - span.x) / span.w) * canvas.width,
+      ((s.y - span.y) / span.h) * canvas.height,
+      (s.w / span.w) * canvas.width,
+      (s.h / span.h) * canvas.height
+    ];
+  }
+
   private drawMarks(): void {
     const item = this.current();
     const canvas = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
     const base = this.baseCanvas;
     if (!item || !item.span || !canvas || !base) return;
-    const span = item.crop ?? item.span;
+    const span = this.effectiveCrop(item) ?? item.span;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -351,17 +457,44 @@ export class Player {
     ctx.drawImage(base, 0, 0);
     ctx.filter = "none";
 
+    // Neighbouring marks that share the crop are drawn first, flat grey, so the
+    // page reads as context without a second answer competing for attention.
+    // They stay covered regardless of reveal: they are not this card's answer.
+    for (const m of this.source.contextMarks?.(item.id, span) ?? []) {
+      const s = m.spans[0];
+      if (!s || s.page !== span.page) continue;
+      const [mx, my, mw, mh] = this.markRect(span, s, canvas);
+      ctx.fillStyle = CONTEXT_COLOR;
+      ctx.fillRect(mx, my, mw, mh);
+    }
+
     // In play mode the player drives reveal, ignoring per-mark revealed state.
     const marks = this.source.marksFor(item.id).filter((m) => m.spans[0]?.page === span.page);
     for (const m of marks) {
       const s = m.spans[0];
       if (!s) continue;
-      const mx = ((s.x - span.x) / span.w) * canvas.width;
-      const my = ((s.y - span.y) / span.h) * canvas.height;
-      const mw = (s.w / span.w) * canvas.width;
-      const mh = (s.h / span.h) * canvas.height;
-      if (m.tags.includes("highlight")) {
-        ctx.fillStyle = "rgba(245, 197, 24, 0.3)";
+      const [mx, my, mw, mh] = this.markRect(span, s, canvas);
+      if (isInk(m)) {
+        // Ink is page-normalized; map each point through the same crop transform
+        // as the bounding box, so handwriting lands where it does on the page.
+        const pts = m.path ?? [];
+        if (pts.length < 2) continue;
+        ctx.save();
+        ctx.strokeStyle = m.color ?? INK_COLOR;
+        ctx.lineWidth = Math.max(1, ((m.weight ?? INK_WEIGHT) / span.w) * canvas.width);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const px = ((pts[i].x - span.x) / span.w) * canvas.width;
+          const py = ((pts[i].y - span.y) / span.h) * canvas.height;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      } else if (m.tags.includes("highlight")) {
+        ctx.fillStyle = hexToRgba(m.color ?? "#f5c518", 0.3);
         ctx.fillRect(mx, my, mw, mh);
       } else if (this.revealed) {
         // A revealed occlusion leaves a dashed skeleton rather than vanishing,

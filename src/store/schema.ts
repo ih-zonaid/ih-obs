@@ -22,7 +22,8 @@ export const PAGE_OWNER = "page";
 export const DEFAULT_OCCLUSION_COLOR = "#3b82f6";
 
 // Quick-pick swatches offered before falling back to a full color picker.
-export const OCCLUSION_PALETTE: string[] = [
+// Shared by occlusions and highlights.
+export const MARK_PALETTE: string[] = [
   "#3b82f6", // blue
   "#f5c518", // yellow
   "#22c55e", // green
@@ -32,13 +33,26 @@ export const OCCLUSION_PALETTE: string[] = [
 
 export const HIGHLIGHT_COLOR = "#f5c518";
 
+// Default pen color and stroke width (fraction of page width, so it scales).
+export const INK_COLOR = "#ef4444";
+export const INK_WEIGHT = 0.004;
+
+// Highlights are a translucent tint, not a solid cover, so the page text shows
+// through. Custom highlight colors reuse the same hex the occlusion picker
+// produces; this turns one into the rgba() the paint layers need. Falls back to
+// the input unchanged if it is not a 6-digit hex (e.g. an already-rgba value).
+export function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 // Anchor line thickness, normalized (≈2px on a ~500px-tall page).
 export const ANCHOR_THICKNESS = 0.004;
 // Smallest span a resize handle may shrink an entity to, so nothing collapses
 // to an unclickable sliver.
 export const MIN_SPAN = 0.006;
-// Vertical padding added above/below a card's band.
-export const CARD_PAD = 0.01;
 
 export const MAX_LEVEL = 6;
 
@@ -52,13 +66,15 @@ export const TAGS = {
   question: "question",
   other: "other",
   occlusion: "occlusion",
-  highlight: "highlight"
+  highlight: "highlight",
+  ink: "ink"
 } as const;
 
 export type BoxTag = "anchor" | "frame" | "concept" | "questions" | "question" | "other";
-export type MarkTag = "occlusion" | "highlight";
-// Convenience alias for the two mark kinds.
-export type MarkKind = MarkTag;
+export type MarkTag = "occlusion" | "highlight" | "ink";
+// The two cover kinds drawn by the rectangle/line tools (ink is a stroke, not a
+// cover, and is handled separately).
+export type MarkKind = "occlusion" | "highlight";
 
 // The role tags a box may carry. An anchor is not a role (it is structural),
 // so it is deliberately absent; a frame is a role because it is selected and
@@ -97,12 +113,24 @@ export interface Box extends EntityBase {
   kind: "box";
 }
 
+// A freehand stroke. Points are page-normalized (0–1) like every other
+// geometry, so ink survives zoom and re-render. `weight` is normalized to the
+// page width so the stroke scales with the page like a real PDF annotation.
+export interface InkPoint {
+  x: number;
+  y: number;
+}
+
 export interface Mark extends EntityBase {
   kind: "mark";
   owner: string;
   groupId?: string;
   revealed?: boolean;
   color?: string;
+  // Present (tagged "ink") when the mark is a freehand stroke. `spans[0]` is
+  // kept as the stroke's bounding box, so ownership/containment still work.
+  path?: InkPoint[];
+  weight?: number;
   // Presence of this object is what makes the mark a flashcard.
   card?: Card;
 }
@@ -200,6 +228,12 @@ export function isHighlight(e: Entity): boolean {
 
 export function isCard(e: Entity): boolean {
   return e.kind === "mark" && !!e.card;
+}
+
+// A freehand stroke. Ink is a Mark so it gets ownership, notes and persistence
+// for free, but it is never an occlusion/highlight cover.
+export function isInk(e: Entity): boolean {
+  return e.kind === "mark" && e.tags.includes(TAGS.ink);
 }
 
 // ---- Factories -------------------------------------------------------------
@@ -316,8 +350,10 @@ export function spanOf(entities: Entity[], id: string): Span | null {
   return entities.find((e) => e.id === id)?.spans[0] ?? null;
 }
 
-// Full page width, the mark's vertical extent on its first page, plus a pad.
-// The fallback context for a card when no context box is assigned.
+// Full page width, the mark's vertical extent on its first page. The fallback
+// context for a card when no context box is assigned. No vertical pad: the band
+// is exactly the marked line, so the player's up/down controls are the only way
+// context is added (a fixed pad cannot know how tall a text line is).
 export function band(mark: Mark): Span {
   const first = mark.spans[0];
   if (!first) return { page: 0, x: 0, y: 0, w: 1, h: 0 };
@@ -327,9 +363,9 @@ export function band(mark: Mark): Span {
   return {
     page: first.page,
     x: 0,
-    y: Math.max(0, y0 - CARD_PAD),
+    y: y0,
     w: 1,
-    h: y1 - y0 + CARD_PAD * 2
+    h: y1 - y0
   };
 }
 
@@ -742,6 +778,8 @@ function migrateEntities(raw: unknown): Entity[] {
         groupId: typeof e.groupId === "string" ? e.groupId : undefined,
         revealed: !!e.revealed,
         color: typeof e.color === "string" ? e.color : undefined,
+        path: Array.isArray(e.path) ? e.path : undefined,
+        weight: typeof e.weight === "number" ? e.weight : undefined,
         card: e.card
       });
     } else {

@@ -385,6 +385,7 @@ body {
 .shell[data-page-theme="dark"][data-page-tint="warm"] .ihobs-region.highlight {
   mix-blend-mode: screen;
   background: rgba(245, 197, 24, 0.24) !important;
+  background: color-mix(in srgb, var(--ih-color, #f5c518) 24%, transparent) !important;
 }
 
 /* Selectable text layer (pdf.js pattern): transparent glyph boxes positioned
@@ -456,7 +457,24 @@ body {
 }
 /* Tool-owns-pointer: transparent to gestures while another tool is active. */
 .ihobs-overlay.click-through,
-.ihobs-overlay.click-through .ihobs-region { pointer-events: none; }
+.ihobs-overlay.click-through .ihobs-region,
+.ihobs-overlay.click-through .ihobs-ink-layer { pointer-events: none; }
+
+/* Freehand ink: one fixed SVG per page above the mark divs. It is transparent to
+   gestures except the fat hit paths, so strokes stay clickable without the SVG
+   swallowing page drags. */
+.ihobs-ink-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  /* Handwriting reads as "on top of the page", above the occlusion divs. */
+  z-index: 2;
+}
+.ihobs-ink-layer > path { pointer-events: none; }
+.ihobs-ink-layer > path.ihobs-ink-hit { pointer-events: stroke; cursor: pointer; }
+.ihobs-overlay.is-ink .ihobs-ink-layer > path,
+.ihobs-overlay.click-through .ihobs-ink-layer > path { pointer-events: none; }
 
 .ihobs-region {
   position: absolute;
@@ -514,6 +532,7 @@ body {
 }
 .ihobs-region.highlight {
   background: rgba(245, 197, 24, 0.28) !important;
+  background: color-mix(in srgb, var(--ih-color, #f5c518) 28%, transparent) !important;
   mix-blend-mode: multiply;
 }
 .ihobs-region.highlight.revealed { opacity: 0.9; }
@@ -697,6 +716,8 @@ body {
   border-top: 1px solid var(--border);
 }
 .player-nav { min-width: 56px; }
+.player-context { min-width: 40px; color: var(--fg-dim); }
+.player-context:hover { color: var(--fg); }
 .player-reveal { min-width: 130px; }
 .player-reveal.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 

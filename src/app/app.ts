@@ -37,19 +37,22 @@ import {
   DEFAULT_OCCLUSION_COLOR,
   DEFAULT_RULES,
   HIGHLIGHT_COLOR,
+  INK_COLOR,
   containsMark,
   containsSpan,
   frames,
+  intersect,
   isAnchor,
   isBox,
   isCard,
   isContainer,
   isFrame,
+  isInk,
   isMark,
   markKind,
   newMarkId,
   newBoxId,
-  OCCLUSION_PALETTE,
+  MARK_PALETTE,
   PAGE_OWNER,
   parseLabel,
   roleOf,
@@ -364,6 +367,7 @@ export class App {
         // A play item id is a box id for question play and a mark id for card
         // play; resolve whichever it is.
         marksFor: (id) => this.marksForPlayerItem(id),
+        contextMarks: (id, crop) => this.contextMarksForCard(id, crop),
         preview: (id) => this.cardPreviews(id),
         siblingIds: (id) => this.siblingCardIds(id)
       },
@@ -855,6 +859,11 @@ export class App {
     if (this.activeKind === "box") {
       const box = this.boxById(this.activeId);
       if (box && isAnchor(box)) return { span, handles: [], axis: "y" };
+    } else {
+      // Ink moves as a whole; resizing a stroke would have to scale its path,
+      // which the minimal pen does not support yet.
+      const mark = this.markById(this.activeId);
+      if (mark && isInk(mark)) return { span, handles: [], axis: "both" };
     }
     return { span, handles: ["nw", "n", "ne", "e", "se", "s", "sw", "w"] };
   }
@@ -869,6 +878,10 @@ export class App {
     if (dx === 0 && dy === 0 && span.w === origin.w && span.h === origin.h) return;
     const resized = span.w !== origin.w || span.h !== origin.h;
     entity.spans[0] = { ...entity.spans[0], ...span };
+    // A moved stroke's points must follow its bounding box.
+    if (!resized && isMark(entity) && isInk(entity) && entity.path) {
+      entity.path = entity.path.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    }
     // Sibling spans follow a move; a resize (first span only) leaves them put.
     for (let i = 1; !resized && i < entity.spans.length; i++) {
       entity.spans[i] = {
@@ -1090,13 +1103,14 @@ export class App {
   private openMarkMenu(id: string, clientX: number, clientY: number): void {
     const mark = this.markById(id);
     if (!mark) return;
-    const kindLabel = markKind(mark) === "highlight" ? "Highlight" : "Occlusion";
+    const ink = isInk(mark);
+    const kindLabel = ink ? "Ink" : markKind(mark) === "highlight" ? "Highlight" : "Occlusion";
     const ownerBox = mark.owner !== PAGE_OWNER ? this.boxById(mark.owner) : undefined;
     const ownerName = ownerBox ? this.boxText(ownerBox) : "page";
     const items: ContextMenuEntry[] = [
       {
         label: "Select / transform",
-        hint: "move · resize",
+        hint: ink ? "move" : "move · resize",
         onSelect: () => this.selectEntry(id, "mark")
       },
       {
@@ -1106,33 +1120,43 @@ export class App {
           void this.persist();
         }
       },
-      ...this.noteMenuItems("mark", id, clientX, clientY),
-      {
+      ...this.noteMenuItems("mark", id, clientX, clientY)
+    ];
+    // Ink is a stroke, not a cover; it cannot be flipped to occlusion/highlight.
+    if (!ink) {
+      items.push({
         label: markKind(mark) === "occlusion" ? "Convert to highlight" : "Convert to occlusion",
         onSelect: () => {
           this.overlay?.setKind(id, markKind(mark) === "occlusion" ? "highlight" : "occlusion");
           void this.persist();
         }
-      }
-    ];
-    if (markKind(mark) === "occlusion") {
-      items.push("separator");
-      const names = ["Blue", "Yellow", "Green", "Pink", "Purple"];
-      OCCLUSION_PALETTE.forEach((color, i) => {
-        items.push({
-          label: names[i] ?? color,
-          swatch: color,
-          onSelect: () => {
-            this.overlay?.setColor(id, color);
-            void this.persist();
-          }
-        });
-      });
-      items.push({
-        label: "Custom color…",
-        onSelect: () => this.pickMarkColor(id, mark.color ?? DEFAULT_OCCLUSION_COLOR)
       });
     }
+    items.push("separator");
+    const names = ["Blue", "Yellow", "Green", "Pink", "Purple"];
+    MARK_PALETTE.forEach((color, i) => {
+      items.push({
+        label: names[i] ?? color,
+        swatch: color,
+        onSelect: () => {
+          this.overlay?.setColor(id, color);
+          void this.persist();
+        }
+      });
+    });
+    items.push({
+      label: "Custom color…",
+      onSelect: () =>
+        this.pickMarkColor(
+          id,
+          mark.color ??
+            (ink
+              ? INK_COLOR
+              : markKind(mark) === "highlight"
+                ? HIGHLIGHT_COLOR
+                : DEFAULT_OCCLUSION_COLOR)
+        )
+    });
     // Attach to the selected box, or detach back to page scope.
     if (ownerBox) {
       items.push({
@@ -1170,7 +1194,8 @@ export class App {
         }
       });
     }
-    items.push("separator", ...this.cardMenuItems(mark));
+    // Ink is not an answer surface, so it cannot become a flashcard.
+    if (!ink) items.push("separator", ...this.cardMenuItems(mark));
     items.push({
       label: "Remove",
       danger: true,
@@ -1346,12 +1371,19 @@ export class App {
       return pa - pb || (a.spans[0]?.y ?? 0) - (b.spans[0]?.y ?? 0);
     });
     const entities = this.allEntities();
-    const items = cards.map((m) => ({
-      id: m.id,
-      label: m.label.replace(/^#+\s*/, "") || "card",
-      span: m.spans[0] ?? null,
-      crop: cardCrop(m, entities)
-    }));
+    const items = cards.map((m) => {
+      const frameId = this.liveFrameIdOf(m);
+      const frame = frameId ? this.boxById(frameId) : undefined;
+      return {
+        id: m.id,
+        label: m.label.replace(/^#+\s*/, "") || "card",
+        span: m.spans[0] ?? null,
+        crop: cardCrop(m, entities),
+        // The frame bounds the up/down context reveal, so it cannot grow into
+        // the neighbouring column. Frame-less cards are unbounded (page edge).
+        bounds: frame?.spans[0] ?? null
+      };
+    });
     this.player.start(this.reviewOrder(items));
   }
 
@@ -1580,7 +1612,7 @@ export class App {
   // the selected words. With a word-level OCR text layer this is exactly the
   // phrase box; no grouping is needed.
   private buildSelectionMarks(captured: CapturedSelection, kind: MarkKind): Mark[] {
-    const color = kind === "highlight" ? "#f5c518" : DEFAULT_OCCLUSION_COLOR;
+    const color = kind === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR;
     return captured.hulls.map((h) => ({
       kind: "mark",
       id: newMarkId(),
@@ -1726,7 +1758,9 @@ export class App {
   private noteLabel(kind: NoteTargetKind, target: string): string {
     if (kind === "mark") {
       const m = this.markById(target);
-      return m ? (markKind(m) === "highlight" ? "Highlight" : "Occlusion") : "Mark";
+      if (!m) return "Mark";
+      if (isInk(m)) return "Ink";
+      return markKind(m) === "highlight" ? "Highlight" : "Occlusion";
     }
     if (kind === "group") return "Mark group";
     if (kind === "page") return "Page";
@@ -2085,6 +2119,50 @@ export class App {
   // right-click, so the two entry points can't drift apart.
   private openToolMenu(action: string, clientX: number, clientY: number): void {
     if (action === "line") this.openLineSettings(clientX, clientY);
+    else if (action === "ink") this.openInkMenu(clientX, clientY);
+  }
+
+  // Pen options: color quick-pick plus stroke sizes. Applies to future strokes.
+  private openInkMenu(clientX: number, clientY: number): void {
+    const style = this.overlay?.getInkStyle() ?? { color: INK_COLOR, weight: 0.004 };
+    const names = ["Blue", "Yellow", "Green", "Pink", "Purple"];
+    const items: ContextMenuEntry[] = [{ label: "Pen color", disabled: true, onSelect: () => undefined }];
+    MARK_PALETTE.forEach((color, i) => {
+      items.push({
+        label: names[i] ?? color,
+        swatch: color,
+        checked: style.color === color,
+        onSelect: () => this.overlay?.setInkStyle(color)
+      });
+    });
+    items.push({ label: "Custom…", onSelect: () => this.pickInkColor(style.color) });
+    items.push("separator", { label: "Pen size", disabled: true, onSelect: () => undefined });
+    const sizes: [string, number][] = [
+      ["Thin", 0.003],
+      ["Medium", 0.006],
+      ["Thick", 0.012]
+    ];
+    for (const [label, weight] of sizes) {
+      items.push({
+        label,
+        checked: style.weight === weight,
+        onSelect: () => this.overlay?.setInkStyle(style.color, weight)
+      });
+    }
+    openContextMenu({ title: "Pen", items }, clientX, clientY);
+  }
+
+  private pickInkColor(current: string): void {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : INK_COLOR;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    input.style.pointerEvents = "none";
+    document.body.appendChild(input);
+    input.addEventListener("input", () => this.overlay?.setInkStyle(input.value));
+    input.addEventListener("blur", () => window.setTimeout(() => input.remove(), 0));
+    input.click();
   }
 
   private openLineMenu(clientX: number, clientY: number, withDraft: boolean): void {
@@ -2154,6 +2232,23 @@ export class App {
     const mark = this.markById(id);
     if (mark && isCard(mark)) return [mark];
     return this.marksForBox(id);
+  }
+
+  // Neighbouring occlusions visible in a card's crop, drawn grey behind the
+  // focused card. Only marks that actually overlap the shown crop count, and the
+  // focused card is excluded. Highlights are skipped: they are annotations, not
+  // answers, so greying them would just add clutter. Requires a frame, because
+  // a frame-less card's band is page-wide and would pull in unrelated rows.
+  private contextMarksForCard(id: string, crop: Span): Mark[] {
+    const card = this.markById(id);
+    if (!card || !this.liveFrameIdOf(card)) return [];
+    return this.marks().filter((m) => {
+      if (m.id === id || !m.tags.includes("occlusion")) return false;
+      const s = m.spans[0];
+      if (!s || s.page !== crop.page) return false;
+      const hit = intersect(crop, s);
+      return hit.w > 0 && hit.h > 0;
+    });
   }
 
   // Marks shown for a question in play mode: those attached to it, plus any

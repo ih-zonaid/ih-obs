@@ -35,6 +35,8 @@ const ICONS = {
   "chevron-down": { body: '<path d="m6 9 6 6 6-6"/>' },
   "chevron-right": { body: '<path d="m9 6 6 6-6 6"/>' },
   "chevron-left": { body: '<path d="m15 6-6 6 6 6"/>' },
+  "arrow-up": { body: '<path d="M12 19V5"/><path d="m6 11 6-6 6 6"/>' },
+  "arrow-down": { body: '<path d="M12 5v14"/><path d="m6 13 6 6 6-6"/>' },
   "chevron-up-down": { body: '<path d="m7 9 5-5 5 5"/><path d="m7 15 5 5 5-5"/>' },
   "chevrons-in": { body: '<path d="m7 4 5 5 5-5"/><path d="m7 20 5-5 5 5"/>' },
 
@@ -60,6 +62,7 @@ const ICONS = {
     body: '<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>'
   },
   "line-band": { body: '<path d="M3 9.5h18"/><path d="M3 14.5h18"/>' },
+  pen: { body: '<path d="M17 3a2.83 2.83 0 0 1 4 4L7.5 20.5 3 21l.5-4.5z"/><path d="m15 5 4 4"/>' },
   target: {
     body: '<circle cx="12" cy="12" r="7"/><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>'
   },

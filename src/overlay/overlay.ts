@@ -1,10 +1,14 @@
 import {
   DEFAULT_OCCLUSION_COLOR,
   HIGHLIGHT_COLOR,
+  INK_COLOR,
+  INK_WEIGHT,
   PAGE_OWNER,
+  isInk,
   markKind,
   newMarkId,
   setMarkKind,
+  type InkPoint,
   type Mark,
   type MarkKind,
   type Span
@@ -12,7 +16,7 @@ import {
 import type { Surface } from "../adapters/types";
 import { icon } from "../ui/icons";
 
-export type OverlayMode = "none" | "occlude" | "highlight" | "line";
+export type OverlayMode = "none" | "occlude" | "highlight" | "line" | "ink";
 
 export interface OverlayOptions {
   onChange(marks: Mark[]): void;
@@ -70,14 +74,21 @@ export class Overlay {
   // The one uncommitted line draft (normalized span) and its live element.
   // Nothing is persisted until commitPending assigns it a kind.
   private pending: { span: Span; el: HTMLElement } | null = null;
+  // Pen tool: color and stroke width (normalized to page width). Sticky across
+  // strokes and pages, like the line tool's band height.
+  private inkColor = INK_COLOR;
+  private inkWeight = INK_WEIGHT;
   private drawing: {
     surface: number;
     startX: number;
     startY: number;
-    ghost: HTMLElement;
+    // The live preview element: a div for rect/line tools, an SVG path for ink.
+    ghost: Element;
     // Set only for a line-tool swipe: height is fixed up front (from
     // bandHeight), so pointerMove only ever adjusts the horizontal extent.
     lineHeight?: number;
+    // Set only for a pen stroke: the normalized points collected so far.
+    inkPoints?: InkPoint[];
   } | null = null;
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
@@ -140,6 +151,7 @@ export class Overlay {
     for (const layer of this.layers.values()) {
       layer.classList.toggle("is-drawing", mode !== "none");
       layer.classList.toggle("is-line", mode === "line");
+      layer.classList.toggle("is-ink", mode === "ink");
     }
     this.updateCursor();
   }
@@ -156,6 +168,10 @@ export class Overlay {
   // fallback — is what shows. For those tall bands the hover preview band
   // (hoverMove) is the honest cue, which is why it is kept.
   private updateCursor(): void {
+    if (this.mode === "ink") {
+      for (const layer of this.layers.values()) layer.style.cursor = "crosshair";
+      return;
+    }
     if (this.mode !== "line") {
       for (const layer of this.layers.values()) layer.style.cursor = "";
       return;
@@ -195,6 +211,17 @@ export class Overlay {
   // per swipe; otherwise a swipe commits straight to a mark of that kind.
   setLineDefault(kind: "none" | MarkKind): void {
     this.lineDefault = kind;
+  }
+
+  // Pen color/width, set from the pen's right-click menu. Sticky for future
+  // strokes; existing strokes keep the values they were drawn with.
+  setInkStyle(color: string, weight?: number): void {
+    this.inkColor = color;
+    if (weight !== undefined) this.inkWeight = weight;
+  }
+
+  getInkStyle(): { color: string; weight: number } {
+    return { color: this.inkColor, weight: this.inkWeight };
   }
 
   // True while an uncommitted line draft is on the page. The context menu uses
@@ -264,6 +291,36 @@ export class Overlay {
     this.options.onChange(this.marks);
   }
 
+  // Builds an ink mark from normalized stroke points. `spans[0]` is the stroke's
+  // bounding box (with a little padding) so containment/ownership still applies;
+  // when the stroke is a single dot the box is a minimal sliver.
+  private commitInk(page: number, points: InkPoint[]): void {
+    if (points.length < 2) return;
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const pad = this.inkWeight / 2;
+    const x0 = Math.max(0, Math.min(...xs) - pad);
+    const y0 = Math.max(0, Math.min(...ys) - pad);
+    const x1 = Math.min(1, Math.max(...xs) + pad);
+    const y1 = Math.min(1, Math.max(...ys) + pad);
+    const span: Span = { page, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    const mark: Mark = {
+      kind: "mark",
+      id: newMarkId(),
+      tags: ["ink"],
+      label: "",
+      spans: [span],
+      color: this.inkColor,
+      weight: this.inkWeight,
+      path: points,
+      owner: this.options.ownerFor(span) || PAGE_OWNER,
+      revealed: false
+    };
+    this.marks.push(mark);
+    this.paint();
+    this.options.onChange(this.marks);
+  }
+
   // Live preview band while the line tool is armed but not yet swiping —
   // shows which line height/row you're about to stamp before you commit.
   private hoverMove(layer: HTMLElement, clientX: number, clientY: number): void {
@@ -322,6 +379,27 @@ export class Overlay {
     // A fresh swipe replaces any earlier uncommitted draft.
     if (this.mode === "line") this.discardPending();
     this.clearHoverGhost();
+    if (this.mode === "ink") {
+      const { w, h } = this.surfaceSize(surface);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("class", "ihobs-ink-live");
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", this.inkColor);
+      path.setAttribute("stroke-width", String(Math.max(1, this.inkWeight * w)));
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      const svg = this.inkSvg(layer);
+      svg.appendChild(path);
+      this.drawing = {
+        surface,
+        startX: x,
+        startY: y,
+        ghost: path,
+        inkPoints: [this.clampPoint(x / w, y / h)]
+      };
+      layer.setPointerCapture(e.pointerId);
+      return;
+    }
     const ghost = document.createElement("div");
     ghost.className = `ihobs-region ghost ${this.mode}`;
     layer.appendChild(ghost);
@@ -346,17 +424,65 @@ export class Overlay {
     }
     const { x, y } = this.localPoint(layer, e.clientX, e.clientY);
     const d = this.drawing;
-    if (d.lineHeight !== undefined) {
+    if (d.inkPoints) {
+      // Freehand: append the point and redraw the live path. Points are
+      // normalized here so the preview and the committed stroke agree.
+      const { w, h } = this.surfaceSize(d.surface);
+      d.inkPoints.push(this.clampPoint(x / w, y / h));
+      const path = d.ghost as SVGPathElement;
+      path.setAttribute("d", this.inkPathD(d.inkPoints, w, h));
+    } else if (d.lineHeight !== undefined) {
       // Height is fixed from pointerdown; only the horizontal swipe extent moves.
-      d.ghost.style.left = `${Math.min(d.startX, x)}px`;
-      d.ghost.style.width = `${Math.abs(x - d.startX)}px`;
+      const el = d.ghost as HTMLElement;
+      el.style.left = `${Math.min(d.startX, x)}px`;
+      el.style.width = `${Math.abs(x - d.startX)}px`;
     } else {
+      const el = d.ghost as HTMLElement;
       const top = Math.min(d.startY, y);
-      d.ghost.style.left = `${Math.min(d.startX, x)}px`;
-      d.ghost.style.top = `${top}px`;
-      d.ghost.style.width = `${Math.abs(x - d.startX)}px`;
-      d.ghost.style.height = `${Math.abs(y - d.startY)}px`;
+      el.style.left = `${Math.min(d.startX, x)}px`;
+      el.style.top = `${top}px`;
+      el.style.width = `${Math.abs(x - d.startX)}px`;
+      el.style.height = `${Math.abs(y - d.startY)}px`;
     }
+  }
+
+  // Points are captured by pointer capture, which keeps reporting even when the
+  // cursor leaves the page; clamp so a stroke never runs off the surface.
+  private clampPoint(x: number, y: number): InkPoint {
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  }
+
+  // A fixed SVG for live ink, one per layer, layered above the mark divs.
+  private inkSvg(layer: HTMLElement): SVGSVGElement {
+    let svg = layer.querySelector<SVGSVGElement>(":scope > .ihobs-ink-layer");
+    if (!svg) {
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "ihobs-ink-layer");
+      svg.setAttribute("width", "100%");
+      svg.setAttribute("height", "100%");
+      layer.appendChild(svg);
+    }
+    return svg;
+  }
+
+  // Builds an SVG path `d` from normalized points for a given pixel size. A
+  // midpoint quadratic keeps the line smooth without storing extra geometry.
+  private inkPathD(points: InkPoint[], w: number, h: number): string {
+    if (points.length === 0) return "";
+    const px = (p: InkPoint): [number, number] => [p.x * w, p.y * h];
+    if (points.length === 1) {
+      const [x, y] = px(points[0]);
+      return `M ${x} ${y} L ${x + 0.01} ${y}`;
+    }
+    const [sx, sy] = px(points[0]);
+    let d = `M ${sx} ${sy}`;
+    for (let i = 1; i < points.length - 1; i++) {
+      const [cx, cy] = px(points[i]);
+      const [nx, ny] = px(points[i + 1]);
+      d += ` Q ${cx} ${cy} ${(cx + nx) / 2} ${(cy + ny) / 2}`;
+    }
+    const [lx, ly] = px(points[points.length - 1]);
+    return `${d} L ${lx} ${ly}`;
   }
 
   private pointerUp(e: PointerEvent): void {
@@ -369,6 +495,13 @@ export class Overlay {
 
     const { w, h } = this.surfaceSize(d.surface);
     const { x, y } = this.localPoint(layer, e.clientX, e.clientY);
+
+    if (d.inkPoints) {
+      // The final cursor position may not have been reported as a move.
+      d.inkPoints.push(this.clampPoint(x / w, y / h));
+      this.commitInk(d.surface, d.inkPoints);
+      return;
+    }
 
     let left: number;
     let top: number;
@@ -526,12 +659,18 @@ export class Overlay {
     for (const layer of this.layers.values()) {
       // The pending line draft is a region too; it is not a mark, so leave it.
       layer.querySelectorAll(".ihobs-region:not(.ghost):not(.pending-line)").forEach((n) => n.remove());
+      // Live ink is re-drawn too, so remove committed stroke paths as well.
+      layer.querySelectorAll(".ihobs-ink-layer > path:not(.ihobs-ink-live)").forEach((n) => n.remove());
     }
     for (const r of this.marks) {
       const span = r.spans[0];
       if (!span) continue;
       const layer = this.layerOf(span.page);
       if (!layer) continue;
+      if (isInk(r)) {
+        this.paintInk(layer, r);
+        continue;
+      }
       const { w, h } = this.surfaceSize(span.page);
       const inflated = `ihobs-region ${markKind(r)}`;
       const attached = r.owner && r.owner !== PAGE_OWNER;
@@ -544,7 +683,13 @@ export class Overlay {
       el.style.top = `${span.y * h}px`;
       el.style.width = `${span.w * w}px`;
       el.style.height = `${span.h * h}px`;
-      el.style.background = markKind(r) === "occlusion" ? r.color ?? DEFAULT_OCCLUSION_COLOR : "transparent";
+      if (markKind(r) === "occlusion") {
+        el.style.background = r.color ?? DEFAULT_OCCLUSION_COLOR;
+      } else {
+        // Highlights expose their color as a var so each theme can compose it
+        // as a translucent tint (multiply in light, screen in dark).
+        el.style.setProperty("--ih-color", r.color ?? HIGHLIGHT_COLOR);
+      }
       el.title = "click to reveal · right-click for options";
       if (this.inspect) {
         const badge = document.createElement("span");
@@ -579,6 +724,51 @@ export class Overlay {
         this.options.onContext?.(r.id, e.clientX, e.clientY);
       });
       layer.appendChild(el);
+    }
+  }
+
+  // Committed ink is one SVG path per stroke, drawn above the mark divs. A wide
+  // transparent hit path sits under it so thin strokes are still easy to click.
+  private paintInk(layer: HTMLElement, r: Mark): void {
+    const span = r.spans[0];
+    if (!span || !r.path?.length) return;
+    const { w, h } = this.surfaceSize(span.page);
+    const svg = this.inkSvg(layer);
+    const d = this.inkPathD(r.path, w, h);
+    const width = Math.max(1, (r.weight ?? INK_WEIGHT) * w);
+
+    const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    hit.setAttribute("class", "ihobs-ink-hit");
+    hit.setAttribute("d", d);
+    hit.setAttribute("fill", "none");
+    hit.setAttribute("stroke", "transparent");
+    hit.setAttribute("stroke-width", String(Math.max(12, width + 8)));
+    hit.setAttribute("stroke-linecap", "round");
+    hit.setAttribute("stroke-linejoin", "round");
+    hit.setAttribute("pointer-events", "stroke");
+
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", "ihobs-ink");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", r.color ?? INK_COLOR);
+    path.setAttribute("stroke-width", String(width));
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("pointer-events", "none");
+
+    hit.addEventListener("pointerdown", (e) => e.stopPropagation());
+    hit.addEventListener("click", (e) => {
+      if (e.altKey) this.remove(r.id);
+      else this.reveal(r.id, !r.revealed);
+    });
+    for (const el of [hit, path]) {
+      el.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.options.onContext?.(r.id, e.clientX, e.clientY);
+      });
+      svg.appendChild(el);
     }
   }
 
