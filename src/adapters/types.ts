@@ -14,6 +14,11 @@ export interface DocView {
   setZoom?(zoom: number): number;
   getZoom?(): number;
   getPageImages?(pageIndices: number[], scale: number): Promise<PageImage[]>;
+  // Renders one page to a self-contained data-URL image. Exists so the app can
+  // publish the current page as a real <img> in the DOM: page-context AI
+  // sidebars ingest image *resources* (Facebook-style <img src>), never a
+  // <canvas>'s pixels or network-less app text, so the raster must be a URL.
+  getPageImageUrl?(page: number, scale: number): Promise<string | null>;
   pageCount?(): number;
   currentPage?(): number;
   goToPage?(page: number): void;

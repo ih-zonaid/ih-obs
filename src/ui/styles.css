@@ -285,6 +285,23 @@ body {
   position: relative;
 }
 .viewer.empty { display: grid; place-items: center; color: var(--fg-dim); }
+/* Published as a real <img> for the browser's page-context AI sidebar, which
+   reads image resources but not canvas pixels. Kept visible (a display:none
+   image may be skipped) yet small and pinned so it never covers the document. */
+.ai-context {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 30;
+  width: 148px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-2);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.ai-context-img { display: block; width: 100%; height: auto; }
 .viewer-loading {
   position: absolute;
   inset: 0;

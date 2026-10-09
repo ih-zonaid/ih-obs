@@ -18,6 +18,7 @@ export interface ToolbarHandlers {
   onGoToPage(page: number): void;
   onToggleInspect(): void;
   onToggleTextDebug(): void;
+  onToggleShareContext(): void;
   onToggleExplorer(): void;
   onToggleOutline(): void;
   onToggleNotes(): void;
@@ -48,6 +49,7 @@ export class Toolbar {
   private outlineOn = false;
   private notesOn = false;
   private explorerOn = false;
+  private shareContextOn = false;
 
   // Overflow: the row is measured after every layout-affecting change; when the
   // controls no longer fit, the least important ones move into a popover instead
@@ -189,6 +191,12 @@ export class Toolbar {
       { extra: "tb-text-debug", label: "text debug" },
       () => this.cycleTextDebug()
     );
+    const shareContext = this.iconCtrl(
+      "image",
+      "AI context: expose the current page as a fetchable image for the browser's AI sidebar",
+      { extra: "tb-share-context hidden", label: "AI context" },
+      () => this.toggleShareContext()
+    );
     const save = this.iconCtrl("save", "save now", { label: "save" }, () => this.h.onSave());
     const outlineBtn = this.iconCtrl(
       "list",
@@ -233,6 +241,7 @@ export class Toolbar {
     this.addItem(reveal, true);
     this.addItem(hideAll, true);
     this.addItem(textDebug, true);
+    this.addItem(shareContext, true);
     this.addItem(save, true);
     this.addItem(outlineBtn, true);
     this.addItem(notesBtn, true);
@@ -412,6 +421,24 @@ export class Toolbar {
   setTextDebugVisible(visible: boolean): void {
     this.root.querySelector(".tb-text-debug")?.classList.toggle("hidden", !visible);
     if (!visible) this.setTextDebug(0);
+  }
+
+  toggleShareContext(): void {
+    this.shareContextOn = !this.shareContextOn;
+    this.setShareContext(this.shareContextOn);
+    this.h.onToggleShareContext();
+  }
+
+  setShareContext(on: boolean): void {
+    this.shareContextOn = on;
+    const btn = this.root.querySelector<HTMLElement>(".tb-share-context");
+    btn?.classList.toggle("active", on);
+  }
+
+  setShareContextVisible(visible: boolean): void {
+    this.root.querySelector(".tb-share-context")?.classList.toggle("hidden", !visible);
+    if (!visible) this.setShareContext(false);
+    this.scheduleRelayout();
   }
 
   toggleInspect(): void {

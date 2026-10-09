@@ -205,6 +205,12 @@ export class App {
   private scrollMemo = new Map<string, number>();
   private pageMode: PageMode = "off";
   private lineDefault: LineDefault = "none";
+  // When set, a floating, real <img> publishes the current page so a
+  // page-context AI sidebar can fetch it (canvas pixels are invisible to those
+  // readers). Held so page changes can refresh it and teardown can remove it.
+  private aiContextWrap: HTMLElement | null = null;
+  private aiContextImg: HTMLImageElement | null = null;
+  private aiContextToken = 0;
   private readonly onScroll: () => void;
   private scrollTimer: number | null = null;
   private loadSeq = 0;
@@ -410,6 +416,7 @@ export class App {
       onGoToPage: (page) => this.view?.goToPage?.(page),
       onToggleInspect: () => this.toggleInspect(),
       onToggleTextDebug: () => this.applyTextDebug(),
+      onToggleShareContext: () => void this.toggleAiContext(),
       onToggleExplorer: () => this.toggleExplorer(),
       onToggleOutline: () => this.toggleRail("outline"),
       onToggleNotes: () => this.toggleRail("notes"),
@@ -421,6 +428,52 @@ export class App {
   private applyTextDebug(): void {
     const level = this.toolbar.getTextDebug();
     this.view?.setTextDebug?.(level);
+  }
+
+  // Publishes the current page as a real, on-screen <img src="data:…">. A
+  // page-context AI sidebar only ingests image *resources* (like a Facebook
+  // post photo), so the raster must be an <img> URL in the DOM — canvas pixels
+  // are invisible to it and ihobs has no server URL to offer. One image only,
+  // refreshed per page, so the data URL stays a single page not a whole doc.
+  private toggleAiContext(): void {
+    if (this.aiContextWrap) {
+      this.unmountAiContext();
+      this.toolbar.setShareContext(false);
+      return;
+    }
+    if (!this.view?.getPageImageUrl) return;
+    const wrap = document.createElement("div");
+    wrap.className = "ai-context";
+    const img = document.createElement("img");
+    img.className = "ai-context-img";
+    img.alt = `Current page of ${this.currentPath ?? "document"}`;
+    wrap.append(img);
+    this.shell.viewer.appendChild(wrap);
+    this.aiContextWrap = wrap;
+    this.aiContextImg = img;
+    this.toolbar.setShareContext(true);
+    void this.refreshAiContext();
+  }
+
+  private unmountAiContext(): void {
+    this.aiContextToken++;
+    this.aiContextWrap?.remove();
+    this.aiContextWrap = null;
+    this.aiContextImg = null;
+  }
+
+  // Renders the visible page to a data URL and swaps it into the published
+  // <img>. A token guards against an older render landing after a page flip;
+  // only the newest result is applied.
+  private async refreshAiContext(): Promise<void> {
+    if (!this.aiContextWrap || !this.aiContextImg || !this.view?.getPageImageUrl) return;
+    const page = this.view.currentPage?.() ?? 1;
+    const token = ++this.aiContextToken;
+    // Match the on-screen scale so the shared bitmap is as sharp as the page.
+    const scale = 1.6 * (this.view.getZoom?.() ?? 1);
+    const url = await this.view.getPageImageUrl(page, scale);
+    if (token !== this.aiContextToken || !this.aiContextWrap || !this.aiContextImg) return;
+    if (url) this.aiContextImg.src = url;
   }
 
   // ?debug=text shows glyph boxes; ?debug=text-full also paints the glyphs.
@@ -732,6 +785,7 @@ export class App {
     this.zoomCtl = null;
     this.toolbar.setZoomVisible(!!view.setZoom);
     this.toolbar.setTextDebugVisible(!!view.setTextDebug);
+    this.toolbar.setShareContextVisible(!!view.getPageImageUrl);
     if (!view.setZoom) return;
     this.zoomCtl = new ZoomController({
       viewer: this.shell.viewer,
@@ -749,7 +803,10 @@ export class App {
     this.toolbar.setZoom(view.getZoom?.() ?? 1);
 
     if (view.pageCount && view.onPageChange) {
-      view.onPageChange((page) => this.toolbar.setPage(page, view.pageCount?.() ?? 1));
+      view.onPageChange((page) => {
+        this.toolbar.setPage(page, view.pageCount?.() ?? 1);
+        void this.refreshAiContext();
+      });
       this.toolbar.setPage(view.currentPage?.() ?? 1, view.pageCount());
     } else {
       this.toolbar.setPage(1, 1);
@@ -2419,6 +2476,7 @@ export class App {
     this.loadAbort?.abort();
     this.loadAbort = null;
     if (this.player.isOpen()) this.player.close();
+    this.unmountAiContext();
     this.overlay?.destroy();
     this.overlay = null;
     this.segDrawer?.destroy();
@@ -2439,6 +2497,7 @@ export class App {
     this.zoomCtl = null;
     this.toolbar.setZoomVisible(false);
     this.toolbar.setTextDebugVisible(false);
+    this.toolbar.setShareContextVisible(false);
     this.toolbar.setPageModeVisible(false);
     this.toolbar.setPage(1, 1);
     this.view?.destroy();

@@ -99,6 +99,9 @@ const ICONS = {
   layers: { body: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>' },
   "file-text": {
     body: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 13h6"/><path d="M9 17h6"/>'
+  },
+  image: {
+    body: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m5 18 5-5 4 4 3-3 2 2"/>'
   }
 };
 

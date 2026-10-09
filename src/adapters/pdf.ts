@@ -301,6 +301,20 @@ export const pdfAdapter: DocAdapter = {
         }
         return out;
       },
+      async getPageImageUrl(page: number, scale: number): Promise<string | null> {
+        const node = nodes[page - 1];
+        if (!node) return null;
+        const viewport = node.page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const c = canvas.getContext("2d");
+        if (!c) return null;
+        await node.page.render({ canvasContext: c, viewport }).promise;
+        // PNG (not JPEG) so the reader gets the sharpest glyph edges; a single
+        // page at this scale stays in the low single-digit MB as base64.
+        return canvas.toDataURL("image/png");
+      },
       setZoom(next: number) {
         zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
         applyZoom();
