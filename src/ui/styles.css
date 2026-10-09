@@ -1679,6 +1679,17 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tb-dock > * { flex: 0 0 auto; }
 /* The "all tools" grid button only exists in the mobile bottom bar. */
 .tb-tools-btn { display: none !important; }
+/* The combined outline/notes panel button is a phone affordance; on desktop the
+   two labelled toggles live inline, so it stays hidden. */
+.tb-rail-toggle { display: none !important; }
+/* Wins over the mobile inline rule below (higher specificity): the toggle is
+   hidden while no document is open, on every screen size. */
+.tb-rail-toggle.tb-doc-hidden { display: none !important; }
+
+/* No document open: the bottom action bar has nothing to act on and the space
+   it reserves is dropped, so the home/hub screens are not padded for it. */
+.tb-dock.hidden { display: none !important; }
+.shell.no-dock .workspace { padding-bottom: 0 !important; }
 
 .tb-overflow-btn.hidden { display: none; }
 .tb-sheet-scrim {
@@ -1745,6 +1756,13 @@ body.resizing { cursor: col-resize; user-select: none; }
     padding-right: max(6px, env(safe-area-inset-right));
   }
   .tb-title { display: none; }
+  /* Fold the vault chip to its icon so page/zoom/panel still fit inline. */
+  .tb-vault-label { display: none; }
+  .vault-chip { padding: 4px 8px; }
+  /* Tighten the page and zoom boxes so both fit beside the panel button. */
+  .tb-page, .tb-zoombox { margin-left: 2px; }
+  .tb-zoom-btn { min-width: 40px; padding: 4px 6px; }
+  .tb-page-input { width: 34px; padding: 3px 4px; }
 }
 
 /* ---- Mobile toolbar: top bar + bottom action bar ----------------------- */
@@ -1780,6 +1798,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   }
   .tb-dock .tb-btn.active { background: var(--accent); border-color: var(--accent); }
   .tb-tools-btn { display: inline-flex !important; }
+  .tb-rail-toggle { display: inline-flex !important; }
 
   /* The overflow becomes a bottom sheet: a labelled grid of every remaining
      tool, full width, above the action bar and its safe-area padding. */

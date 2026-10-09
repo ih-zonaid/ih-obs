@@ -20,6 +20,7 @@ const ICONS = {
   // Navigation / shell
   home: { body: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/>' },
   "panel-left": { body: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>' },
+  "panel-right": { body: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>' },
   search: { body: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>' },
   database: {
     body: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>'

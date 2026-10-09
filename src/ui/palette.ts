@@ -1,4 +1,5 @@
 import { flattenFiles, type FsNode } from "../vault/types";
+import { scrollIntoContainer } from "./scroll";
 
 export interface PaletteHandlers {
   onOpen(path: string): void;
@@ -179,8 +180,10 @@ export class Palette {
       });
       list.appendChild(row);
     });
-    const sel = list.querySelector(".selected");
-    if (sel) sel.scrollIntoView({ block: "nearest" });
+    const sel = list.querySelector<HTMLElement>(".selected");
+    // Scroll the list itself, not Element.scrollIntoView, so the document
+    // element behind the overlay is never scrolled (see scroll.ts).
+    if (sel) scrollIntoContainer(list as HTMLElement, sel, "nearest");
   }
 
   private label(r: Candidate): HTMLElement {

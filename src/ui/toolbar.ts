@@ -22,6 +22,8 @@ export interface ToolbarHandlers {
   onToggleExplorer(): void;
   onToggleOutline(): void;
   onToggleNotes(): void;
+  // One button that opens the right panel to its last-used tab, or closes it.
+  onToggleRail(): void;
   // Right-click on a tool button opens that tool's options at the pointer. The
   // toolbar passes the button's data-action so the app can route it; tools with
   // no options simply never register a context handler and never emit this.
@@ -221,6 +223,16 @@ export class Toolbar {
       { extra: "tb-notes-toggle", label: "notes" },
       () => this.toggleNotes()
     );
+    // One button that opens the right panel (outline or notes) to its last tab,
+    // or closes it. Primarily a phone affordance so the rail is reachable from
+    // the always-visible header without opening the all-tools sheet; hidden on
+    // desktop where the two labelled toggles already live inline.
+    const railBtn = this.iconCtrl(
+      "panel-right",
+      "toggle the outline / notes panel",
+      { extra: "tb-rail-toggle", label: "panel" },
+      () => this.h.onToggleRail()
+    );
     const theme = this.iconCtrl(
       "sun",
       "switch theme",
@@ -244,6 +256,8 @@ export class Toolbar {
     this.addItem(page, false);
     this.addItem(zoomBox, false);
     this.addItem(spacer, false);
+    // After the spacer so it sits at the right edge of the identity row.
+    this.addItem(railBtn, false);
 
     // The dock holds the drawing/annotation tools plus the tools-sheet button.
     // On desktop it is a transparent group that flows inline with the rest of
@@ -251,7 +265,7 @@ export class Toolbar {
     // bottom action bar (see styles.css). Created after the spacer so it starts
     // in its final desktop position and never flashes across the row on load.
     this.dock = document.createElement("div");
-    this.dock.className = "tb-dock";
+    this.dock.className = "tb-dock hidden";
     this.root.appendChild(this.dock);
 
     this.addItem(outlineBtn, true);
@@ -387,6 +401,15 @@ export class Toolbar {
     this.scheduleRelayout();
   }
 
+  // The bottom action bar (mobile) / inline tool group (desktop) and the header
+  // rail toggle are document controls: on the home and hub screens there is
+  // nothing to act on, so the app hides them (and the space they reserve).
+  setDockVisible(visible: boolean): void {
+    this.dock.classList.toggle("hidden", !visible);
+    this.root.querySelector(".tb-rail-toggle")?.classList.toggle("tb-doc-hidden", !visible);
+    this.scheduleRelayout();
+  }
+
   private scheduleRelayout(): void {
     if (this.raf) return;
     this.raf = requestAnimationFrame(() => {
@@ -424,8 +447,9 @@ export class Toolbar {
     }
   }
 
-  // Mobile: the top row keeps only the identity controls, and every other
-  // control moves into the bottom "all tools" sheet so nothing is unreachable.
+  // Mobile: the top row keeps only the identity controls plus page/zoom (so
+  // they are always reachable without the tools sheet), and every other control
+  // moves into the bottom "all tools" sheet.
   private layoutMobile(): void {
     for (const it of this.items) {
       if (it.home !== this.root) continue;
@@ -435,6 +459,9 @@ export class Toolbar {
         el.dataset.action === "go-home" ||
         el.id === "tb-vault" ||
         el.id === "tb-title" ||
+        el.id === "tb-page" ||
+        el.id === "tb-zoombox" ||
+        el.classList.contains("tb-rail-toggle") ||
         el.classList.contains("tb-spacer") ||
         el.classList.contains("tb-explorer-toggle");
       if (keepInline) this.root.appendChild(el);
@@ -571,6 +598,11 @@ export class Toolbar {
   setNotes(on: boolean): void {
     this.notesOn = on;
     this.root.querySelector(".tb-notes-toggle")?.classList.toggle("active", on);
+  }
+
+  // The combined panel button lights while the rail (either tab) is open.
+  setRailActive(on: boolean): void {
+    this.root.querySelector(".tb-rail-toggle")?.classList.toggle("active", on);
   }
 
   toggleExplorer(): void {

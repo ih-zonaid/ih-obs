@@ -86,6 +86,7 @@ import { Palette } from "../ui/palette";
 import { Player, type PlayerItem } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
+import { scrollIntoContainer } from "../ui/scroll";
 import { Transform, type TransformTarget } from "../ui/transform";
 import { Toolbar } from "../ui/toolbar";
 import { VaultHub } from "../ui/vaultHub";
@@ -475,6 +476,7 @@ export class App {
       onToggleExplorer: () => this.toggleExplorer(),
       onToggleOutline: () => this.toggleRail("outline"),
       onToggleNotes: () => this.toggleRail("notes"),
+      onToggleRail: () => this.toggleRailPanel(),
       onToolMenu: (action, x, y) => this.openToolMenu(action, x, y)
     });
 
@@ -1034,6 +1036,7 @@ export class App {
     }
     this.hideLoading();
     this.view = view;
+    this.setDockVisible(true);
 
     this.setupZoom(view);
     // Only raster documents (PDF pages, images) have a page tone to set.
@@ -1308,6 +1311,7 @@ export class App {
     this.shell.notes.classList.toggle("hidden", this.railTab !== "notes");
     this.toolbar.setOutline(this.railOpen && outlineSupported && this.railTab === "outline");
     this.toolbar.setNotes(this.railOpen && this.railTab === "notes");
+    this.toolbar.setRailActive(this.railOpen && !!this.view);
     if (this.shell.root.classList.contains("is-mobile")) this.applyDrawers();
   }
 
@@ -1366,6 +1370,27 @@ export class App {
     } else {
       this.railOpen = true;
       this.railTab = kind;
+    }
+    this.updateRailVisibility();
+    void this.prefs.update({ railOpen: this.railOpen, railTab: this.railTab, railConfigured: true });
+  }
+
+  private setDockVisible(visible: boolean): void {
+    this.toolbar.setDockVisible(visible);
+    this.shell.root.classList.toggle("no-dock", !visible);
+  }
+
+  // One-button rail toggle for the header: open to the last-used tab (or the
+  // default), close if already open. Keeps the rail reachable on mobile without
+  // the all-tools sheet.
+  private toggleRailPanel(): void {
+    if (!this.view) return;
+    const outlineSupported = this.view.kind === "pdf" || this.view.kind === "image";
+    if (this.railOpen) {
+      this.railOpen = false;
+    } else {
+      this.railOpen = true;
+      if (this.railTab === "outline" && !outlineSupported) this.railTab = "notes";
     }
     this.updateRailVisibility();
     void this.prefs.update({ railOpen: this.railOpen, railTab: this.railTab, railConfigured: true });
@@ -1942,7 +1967,10 @@ export class App {
     if (!first) return;
     this.selectEntry(first.id, "mark");
     const page = first.spans[0]?.page;
-    if (page !== undefined) this.view?.surfaces.find((s) => s.index === page)?.el.scrollIntoView({ block: "center" });
+    if (page !== undefined) {
+      const surface = this.view?.surfaces.find((s) => s.index === page);
+      if (surface) scrollIntoContainer(this.shell.viewer, surface.el, "center");
+    }
   }
 
   // The full entity list as the app currently sees it, including any marks the
@@ -2375,7 +2403,7 @@ export class App {
     const page = m?.spans[0]?.page;
     if (page === undefined) return;
     const surface = this.view?.surfaces.find((s) => s.index === page);
-    surface?.el.scrollIntoView({ block: "center" });
+    if (surface) scrollIntoContainer(this.shell.viewer, surface.el, "center");
   }
 
   private refreshNotes(): void {
@@ -3020,6 +3048,7 @@ export class App {
     this.toolbar.setNotes(false);
     this.zoomCtl?.destroy();
     this.zoomCtl = null;
+    this.setDockVisible(false);
     this.toolbar.setZoomVisible(false);
     this.toolbar.setTextDebugVisible(false);
     this.toolbar.setShareContextVisible(false);

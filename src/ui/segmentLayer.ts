@@ -1,6 +1,7 @@
 import { isAnchor, isBox, roleOf, type Box, type Entity } from "../store/schema";
 import type { Surface } from "../adapters/types";
 import { icon } from "./icons";
+import { scrollIntoContainer, scrollParent } from "./scroll";
 
 export interface SegmentLayerOptions {
   onSelect(id: string, kind: "box" | "mark"): void;
@@ -67,16 +68,21 @@ export class SegmentLayer {
   // viewport through every intervening page, and each one transiently enters
   // the render-ahead margin and gets rasterized just to be flown past —
   // expensive for scanned PDFs and a source of visible jank on long jumps.
+  // Scroll via the container, never Element.scrollIntoView: the latter also
+  // scrolls the document element, which shifts the fixed toolbar off-screen
+  // (see scroll.ts).
   scrollTo(id: string): void {
     for (const layer of this.layers.values()) {
+      const container = layer.closest<HTMLElement>(".viewer") ?? scrollParent(layer);
+      if (!container) return;
       const box = layer.querySelector<HTMLElement>(`[data-seg="${id}"]`);
       if (box) {
-        box.scrollIntoView({ block: "center" });
+        scrollIntoContainer(container, box, "center");
         return;
       }
       const anchor = layer.querySelector<HTMLElement>(`[data-marker="${id}"]`);
       if (anchor) {
-        anchor.scrollIntoView({ block: "start" });
+        scrollIntoContainer(container, anchor, "start");
         return;
       }
     }

@@ -2,6 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { readBytes } from "../vault/fs";
 import { isPdf } from "../vault/tree";
+import { scrollIntoContainer } from "../ui/scroll";
 import type { DocAdapter, DocView, LoadContext, PageImage, Surface } from "./types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -270,7 +271,7 @@ export const pdfAdapter: DocAdapter = {
       goToPage(page: number) {
         const target = nodes[Math.max(0, Math.min(nodes.length - 1, page - 1))];
         if (!target) return;
-        target.wrap.scrollIntoView({ block: "start" });
+        scrollIntoContainer(ctx.container, target.wrap, "start");
         currentPage = target.index + 1;
         pageCb?.(currentPage);
       },

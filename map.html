@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Bangladesh 64 District GK Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    #map {
+      height: 100vh;
+      width: 100vw;
+    }
+    .info-box {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      max-width: 300px;
+      line-height: 1.4;
+    }
+    .info-box h3 {
+      margin: 0 0 8px 0;
+      color: #1a365d;
+    }
+  </style>
+</head>
+<body>
+
+<div class="info-box" id="info">
+  <h3>Hover over a district</h3>
+  <p>Move your mouse over any district to view General Knowledge notes.</p>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  // 1. Initialize map centered on Bangladesh
+  const map = L.map('map').setView([23.6850, 90.3563], 7);
+
+  // 2. OpenStreetMap Tiles (Works on http://localhost:8000)
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+
+  // 3. Custom GK Fact base
+  const gkData = {
+    "Meherpur": { border: "India", division: "Khulna", facts: "First provisional capital of BD (Mujibnagar, 1971)." },
+    "Bandarban": { border: "India & Myanmar", division: "Chittagong", facts: "Contains highest peaks (Tahjindong/Keokradong)." },
+    "Panchagarh": { border: "India (3 sides)", division: "Rangpur", facts: "Northernmost district. Known for plain-land tea cultivation." },
+    "Cox's Bazar": { border: "Myanmar", division: "Chittagong", facts: "World's longest natural sandy sea beach (120 km)." },
+    "Gazipur": { border: "Internal", division: "Dhaka", facts: "Largest city corporation by area in Bangladesh." }
+  };
+
+  // 4. Reliable 64-District GeoJSON endpoint
+  const geojsonUrl = "https://raw.githubusercontent.com/ahnaf-tahmid-chowdhury/Choropleth-Bangladesh/master/bangladesh_geojson_adm2_64_districts_zillas.json";
+
+  fetch(geojsonUrl)
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP error! Status: ${res.status}`);
+      return res.json();
+    })
+    .then(data => {
+      L.geoJSON(data, {
+        style: {
+          fillColor: '#3182ce',
+          weight: 1,
+          opacity: 1,
+          color: '#ffffff',
+          fillOpacity: 0.5
+        },
+        onEachFeature: (feature, layer) => {
+          // Parse district name from ADM2_EN or NAME_2
+          const props = feature.properties;
+          const distName = props.ADM2_EN || props.NAME_2 || props.district || "District";
+          const info = gkData[distName] || {
+            border: "Standard",
+            division: props.ADM1_EN || props.NAME_1 || "-",
+            facts: "Add facts to the gkData object in script."
+          };
+
+          // Mouseover highlight and detail update
+          layer.on({
+            mouseover: () => {
+              layer.setStyle({
+                fillOpacity: 0.85,
+                weight: 2,
+                color: '#1a365d'
+              });
+              document.getElementById('info').innerHTML = `
+                <h3>${distName} District</h3>
+                <b>Division:</b> ${info.division}<br/>
+                <b>Border Type:</b> ${info.border}<br/>
+                <hr style="margin: 8px 0; border: 0; border-top: 1px solid #ddd;">
+                <b>GK Note:</b> ${info.facts}
+              `;
+            },
+            mouseout: () => {
+              layer.setStyle({
+                fillOpacity: 0.5,
+                weight: 1,
+                color: '#ffffff'
+              });
+            }
+          });
+
+          // Click popup
+          layer.bindPopup(`<b>${distName} Zilla</b><br/>${info.facts}`);
+        }
+      }).addTo(map);
+    })
+    .catch(err => {
+      console.error("Error loading GeoJSON:", err);
+      document.getElementById('info').innerHTML = `<h3>Error</h3><p>Could not load district GeoJSON. Check console for details.</p>`;
+    });
+</script>
+
+</body>
+</html>
