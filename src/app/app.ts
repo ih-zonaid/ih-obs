@@ -24,8 +24,10 @@ import {
   PrefsStore,
   savePageMode,
   saveTheme,
+  type LeftTab,
   type LineDefault,
-  type PageMode
+  type PageMode,
+  type RailTab
 } from "../store/prefs";
 import { kvGet, kvRemove, kvSet } from "../store/kv";
 import {
@@ -109,6 +111,8 @@ function findNode(nodes: OutlineNode[], id: string): OutlineNode | null {
 
 interface Shell {
   root: HTMLElement;
+  activity: HTMLElement;
+  leftRail: HTMLElement;
   explorer: HTMLElement;
   viewer: HTMLElement;
   rail: HTMLElement;
@@ -117,6 +121,7 @@ interface Shell {
   notes: HTMLElement;
   palette: HTMLElement;
   player: HTMLElement;
+  scrim: HTMLElement;
 }
 
 function buildShell(mount: HTMLElement): Shell {
@@ -130,8 +135,19 @@ function buildShell(mount: HTMLElement): Shell {
   const workspace = document.createElement("div");
   workspace.className = "workspace";
 
+  // Left side: a narrow activity bar (the durable sidebar spine, always
+  // visible) plus the collapsible sidebar body it switches. The activity bar
+  // stays put while the body collapses, so the view can always be reopened.
+  const leftRail = document.createElement("div");
+  leftRail.className = "left-rail";
+
+  const activity = document.createElement("div");
+  activity.className = "activity-bar";
+
   const explorer = document.createElement("div");
   explorer.className = "explorer";
+
+  leftRail.append(activity, explorer);
 
   const viewer = document.createElement("div");
   viewer.className = "viewer empty";
@@ -157,11 +173,15 @@ function buildShell(mount: HTMLElement): Shell {
   const player = document.createElement("div");
   player.className = "player-root hidden";
 
-  workspace.append(explorer, viewer, rail);
-  shell.append(toolbar, workspace, palette, player);
+  // Backdrop for the mobile drawers. Tapping it closes whichever is open.
+  const scrim = document.createElement("div");
+  scrim.className = "scrim";
+
+  workspace.append(leftRail, viewer, rail);
+  shell.append(toolbar, workspace, palette, player, scrim);
   mount.appendChild(shell);
 
-  return { root: shell, explorer, viewer, rail, railTabs, outline, notes, palette, player };
+  return { root: shell, activity, leftRail, explorer, viewer, rail, railTabs, outline, notes, palette, player, scrim };
 }
 
 export class App {
@@ -195,8 +215,13 @@ export class App {
   private mode: OverlayMode = "none";
   private inspect = false;
   private railOpen = false;
-  private railTab: "outline" | "notes" = "outline";
+  private railTab: RailTab = "outline";
   private leftCollapsed = false;
+  private leftTab: LeftTab = "files";
+  // Remembered sidebar widths in px (0 = CSS default). Loaded per vault and
+  // written back on drag end, so a chosen layout survives a restart.
+  private leftWidth = 0;
+  private rightWidth = 0;
   private pendingSelection: CapturedSelection | null = null;
   private currentPath: string | null = null;
   private scrollMemo = new Map<string, number>();
@@ -411,6 +436,219 @@ export class App {
       onToggleNotes: () => this.toggleRail("notes"),
       onToolMenu: (action, x, y) => this.openToolMenu(action, x, y)
     });
+
+    this.buildActivityBar();
+    this.wireResizeHandles();
+    this.shell.scrim.addEventListener("click", () => this.closeDrawers());
+
+    // Escape closes an open mobile drawer (or clears the palette overlay first,
+    // which owns Escape while it is up).
+    window.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (this.palette.isOpen()) return;
+      this.closeDrawers();
+    });
+
+    // Crossing the drawer breakpoint toggles the mobile mode: entering it tucks
+    // any open drawers away; leaving it restores the desktop persistent panels.
+    const mq = window.matchMedia("(max-width: 900px)");
+    mq.addEventListener("change", () => this.syncLayoutMode());
+    this.syncLayoutMode();
+  }
+
+  // ---- Left activity bar -------------------------------------------------
+
+  // The activity bar is the always-visible left spine. Files and Bookmarks are
+  // real sidebar views; Search is an action that opens the quick-open palette.
+  private buildActivityBar(): void {
+    const items: Array<{
+      id: LeftTab | "search";
+      iconName: "layers" | "search" | "star";
+      title: string;
+      action?: boolean;
+    }> = [
+      { id: "files", iconName: "layers", title: "files" },
+      { id: "search", iconName: "search", title: "go to file", action: true },
+      { id: "bookmarks", iconName: "star", title: "bookmarks" }
+    ];
+    this.shell.activity.innerHTML = "";
+    for (const item of items) {
+      const b = document.createElement("button");
+      b.className = "activity-btn";
+      b.dataset.tab = item.id;
+      b.appendChild(icon(item.iconName, 18));
+      b.title = item.title;
+      b.setAttribute("aria-label", item.title);
+      b.addEventListener("click", () => {
+        if (item.action) {
+          this.palette.toggle();
+          return;
+        }
+        this.selectLeftTab(item.id as LeftTab);
+      });
+      this.shell.activity.appendChild(b);
+    }
+    this.syncActivityBar();
+  }
+
+  private syncActivityBar(): void {
+    this.shell.activity.querySelectorAll<HTMLElement>(".activity-btn").forEach((b) => {
+      const active = b.dataset.tab === this.leftTab && !this.leftCollapsed;
+      b.classList.toggle("active", active);
+    });
+  }
+
+  private selectLeftTab(tab: LeftTab): void {
+    this.leftTab = tab;
+    // Files shows the whole vault; Bookmarks shows only pinned files.
+    this.explorer.showPinnedOnly(tab === "bookmarks");
+    this.explorer.rerender();
+    if (this.leftCollapsed) {
+      this.leftCollapsed = false;
+      this.applyLeftCollapsed();
+      this.toolbar.setExplorer(true);
+      // Persist the desktop choice only; on mobile this just opens the drawer.
+      if (!this.shell.root.classList.contains("is-mobile")) {
+        void this.prefs.update({ leftCollapsed: false });
+      }
+    } else {
+      this.syncActivityBar();
+    }
+  }
+
+  // ---- Resizable sidebars ------------------------------------------------
+
+  // Two thin drag handles, one on the inside edge of each sidebar. Pointer
+  // capture keeps the drag alive across the iframe/scroll surface; widths are
+  // clamped to the same range the CSS enforces and persisted on release. A
+  // double-click restores the CSS default.
+  private wireResizeHandles(): void {
+    const left = document.createElement("div");
+    left.className = "resize-handle resize-left";
+    left.title = "drag to resize · double-click to reset";
+    this.shell.viewer.before(left);
+    left.addEventListener("pointerdown", (e) => this.startResize(e, "left", left));
+    left.addEventListener("dblclick", () => this.resetWidth("left"));
+
+    const right = document.createElement("div");
+    right.className = "resize-handle resize-right";
+    right.title = "drag to resize · double-click to reset";
+    // Sits on the viewer's right edge, i.e. just before the rail.
+    this.shell.viewer.after(right);
+    right.addEventListener("pointerdown", (e) => this.startResize(e, "right", right));
+    right.addEventListener("dblclick", () => this.resetWidth("right"));
+  }
+
+  private startResize(e: PointerEvent, side: "left" | "right", handle: HTMLElement): void {
+    // The handles only make sense on the desktop grid; on mobile the sidebars
+    // are drawers and resizing is disabled.
+    if (window.matchMedia("(max-width: 900px)").matches) return;
+    if (side === "left" && (this.leftCollapsed || !this.vault)) return;
+    if (side === "right" && (!this.railOpen || !this.view)) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+
+    const startX = e.clientX;
+    const startW = side === "left" ? this.shell.leftRail.getBoundingClientRect().width : this.shell.rail.getBoundingClientRect().width;
+    const bounds = side === "left" ? { min: 180, max: 520 } : { min: 220, max: 620 };
+
+    const move = (ev: PointerEvent): void => {
+      const delta = ev.clientX - startX;
+      const raw = side === "left" ? startW + delta : startW - delta;
+      const w = Math.max(bounds.min, Math.min(bounds.max, Math.round(raw)));
+      if (side === "left") {
+        this.leftWidth = w;
+        this.applySidebarWidths();
+      } else {
+        this.rightWidth = w;
+        this.applySidebarWidths();
+      }
+    };
+    const up = (): void => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      document.body.classList.remove("resizing");
+      void this.prefs.update({ leftWidth: this.leftWidth, rightWidth: this.rightWidth });
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  }
+
+  private resetWidth(side: "left" | "right"): void {
+    if (side === "left") this.leftWidth = 0;
+    else this.rightWidth = 0;
+    this.applySidebarWidths();
+    void this.prefs.update({ leftWidth: this.leftWidth, rightWidth: this.rightWidth });
+  }
+
+  // Sidebar widths live as CSS custom properties on the shell so both the grid
+  // columns and the drag handles can read them. 0 means "fall back to the
+  // stylesheet default", which is what the var() fallbacks encode.
+  private applySidebarWidths(): void {
+    const root = this.shell.root;
+    if (this.leftWidth > 0) root.style.setProperty("--left-w", `${this.leftWidth}px`);
+    else root.style.removeProperty("--left-w");
+    if (this.rightWidth > 0) root.style.setProperty("--right-w", `${this.rightWidth}px`);
+    else root.style.removeProperty("--right-w");
+  }
+
+  // Tracks the desktop ↔ mobile (drawer) split: the grid becomes drawers and a
+  // scrim, and open panels are tucked away on entry so the page is unobstructed.
+  private syncLayoutMode(): void {
+    const mobile = window.matchMedia("(max-width: 900px)").matches;
+    this.shell.root.classList.toggle("is-mobile", mobile);
+    if (mobile) {
+      this.leftCollapsed = true;
+      this.railOpen = false;
+      this.applyLeftCollapsed();
+      this.toolbar.setExplorer(false);
+      this.applyDrawers();
+      return;
+    }
+    // Back on the desktop grid: restore the stored layout, since the drawers
+    // forced both panels closed while we were in mobile mode. Before a vault is
+    // open there is no layout to restore, so just clear the drawer state.
+    if (!this.vault) {
+      this.applyDrawers();
+      return;
+    }
+    const p = this.prefs.get();
+    this.leftCollapsed = p.leftCollapsed;
+    this.railOpen = p.railOpen;
+    this.applyLeftCollapsed();
+    this.toolbar.setExplorer(!this.leftCollapsed);
+    // Only re-render the rail when a document is open; otherwise keep the stored
+    // railOpen intent so the next open still restores the outline.
+    if (this.view) this.updateRailVisibility();
+    else this.applyDrawers();
+  }
+
+  // Which drawers are open on mobile, plus the scrim and toolbar active state.
+  // On desktop these classes are cleared: the sidebars are persistent grid
+  // columns there, not drawers, and the scrim must never appear.
+  private applyDrawers(): void {
+    const root = this.shell.root;
+    const mobile = root.classList.contains("is-mobile");
+    const leftOpen = mobile && !!this.vault && !this.leftCollapsed;
+    const rightOpen = mobile && this.railOpen && !!this.view;
+    root.classList.toggle("drawer-left-open", leftOpen);
+    root.classList.toggle("drawer-right-open", rightOpen);
+    root.classList.toggle("drawer-open", leftOpen || rightOpen);
+  }
+
+  private closeDrawers(): void {
+    if (!this.shell.root.classList.contains("is-mobile")) return;
+    if (this.leftCollapsed && !this.railOpen) return;
+    this.leftCollapsed = true;
+    this.railOpen = false;
+    this.applyLeftCollapsed();
+    this.toolbar.setExplorer(false);
+    this.toolbar.setOutline(false);
+    this.toolbar.setNotes(false);
+    this.updateRailVisibility();
   }
 
   // Applies the PDF text-layer debug level to the current view (no-op otherwise).
@@ -487,6 +725,8 @@ export class App {
     this.toolbar.setZoom(1);
     this.toolbar.setVaultLabel(null);
     this.shell.root.classList.add("vault-collapsed");
+    this.syncActivityBar();
+    this.applyDrawers();
     this.explorer.render({ name: "", path: "", kind: "directory", children: [] });
     this.palette.setTree({ name: "", path: "", kind: "directory", children: [] });
     this.vaults = await listVaults();
@@ -572,8 +812,16 @@ export class App {
     this.railOpen = prefs.railOpen;
     this.railTab = prefs.railTab;
     this.lineDefault = prefs.lineDefault ?? "none";
+    this.leftWidth = prefs.leftWidth > 0 ? prefs.leftWidth : 0;
+    this.rightWidth = prefs.rightWidth > 0 ? prefs.rightWidth : 0;
+    this.leftTab = "files";
+    this.explorer.showPinnedOnly(false);
+    this.applySidebarWidths();
     this.applyLeftCollapsed();
     this.toolbar.setExplorer(!this.leftCollapsed);
+    // On a phone the panels are drawers and must start closed, regardless of
+    // the desktop layout that was stored.
+    this.syncLayoutMode();
 
     await setCurrentVaultId(rec.id);
     await putVault({ ...rec, lastOpenedAt: Date.now() });
@@ -915,6 +1163,7 @@ export class App {
   }
 
   private refreshOutline(): void {
+    this.updateRailVisibility();
     // Counts must be set before render so the badges are drawn in one pass.
     this.outline.setInspect(this.inspect, this.inspect ? this.inspectCounts() : new Map());
     this.outline.render(this.entities);
@@ -937,6 +1186,8 @@ export class App {
   private updateRailVisibility(): void {
     const outlineSupported = this.view?.kind === "pdf" || this.view?.kind === "image";
     if (!outlineSupported && this.railTab === "outline") this.railTab = "notes";
+    // Never show the rail with nothing in it: without a document the outline is
+    // meaningless and the notes pages are all empty.
     if (!this.view) this.railOpen = false;
 
     const ws = this.shell.root.querySelector(".workspace");
@@ -948,12 +1199,15 @@ export class App {
     this.shell.notes.classList.toggle("hidden", this.railTab !== "notes");
     this.toolbar.setOutline(this.railOpen && outlineSupported && this.railTab === "outline");
     this.toolbar.setNotes(this.railOpen && this.railTab === "notes");
+    if (this.shell.root.classList.contains("is-mobile")) this.applyDrawers();
   }
 
   // Opening a paged document shows the outline by default until the user has
-  // made a rail choice; afterwards their last choice is respected.
+  // made a rail choice; afterwards their last choice is respected. On mobile the
+  // outline is a drawer, so it must not spring open over the document.
   private openRailFor(view: DocView): void {
     if (this.prefs.get().railConfigured) return;
+    if (this.shell.root.classList.contains("is-mobile")) return;
     if (view.kind === "pdf" || view.kind === "image") {
       this.railOpen = true;
       this.railTab = "outline";
@@ -1013,11 +1267,17 @@ export class App {
     this.leftCollapsed = !this.leftCollapsed;
     this.applyLeftCollapsed();
     this.toolbar.setExplorer(!this.leftCollapsed);
-    void this.prefs.update({ leftCollapsed: this.leftCollapsed });
+    // Persist only the desktop collapse state; on mobile the drawer opens
+    // transiently and must not rewrite the wide-screen layout choice.
+    if (!this.shell.root.classList.contains("is-mobile")) {
+      void this.prefs.update({ leftCollapsed: this.leftCollapsed });
+    }
   }
 
   private applyLeftCollapsed(): void {
     this.shell.root.classList.toggle("left-collapsed", this.leftCollapsed);
+    this.syncActivityBar();
+    if (this.shell.root.classList.contains("is-mobile")) this.applyDrawers();
   }
 
   private selectEntry(id: string, kind: "box" | "mark"): void {
@@ -2338,6 +2598,7 @@ export class App {
     this.drawTool = null;
     this.shell.rail.classList.add("hidden");
     this.shell.root.querySelector(".workspace")?.classList.remove("has-rail");
+    this.applyDrawers();
     this.toolbar.setOutline(false);
     this.toolbar.setNotes(false);
     this.zoomCtl?.destroy();

@@ -5,6 +5,14 @@ export interface RecentEntry {
   at: number;
 }
 
+// Left-sidebar views. "files" is the vault explorer; the rest are "coming
+// soon" activity-bar entries, kept out of the leftCollapsed persistence path.
+export type LeftTab = "files" | "search" | "bookmarks";
+
+// Right-sidebar views. "notes" is a single global panel that follows the active
+// document (the Notes tab always shows the current document's notes).
+export type RailTab = "outline" | "notes";
+
 export interface Prefs {
   recents: RecentEntry[];
   pinned: string[];
@@ -14,10 +22,14 @@ export interface Prefs {
   // `railOpen`/`railTab` remember the right rail's visibility and active tab.
   leftCollapsed: boolean;
   railOpen: boolean;
-  railTab: "outline" | "notes";
+  railTab: RailTab;
   // Set once the user opens/closes the rail themselves; until then we may
   // auto-open the outline for the first paged document.
   railConfigured: boolean;
+  // Sidebar widths in px, remembered across sessions. 0 means "use the CSS
+  // default"; the app clamps whatever is loaded to the allowed range.
+  leftWidth: number;
+  rightWidth: number;
   // Line tool's default kind. "none" keeps the original two-step flow (swipe,
   // then choose occlusion/highlight from the draft's right-click menu); a kind
   // commits each swipe immediately with that tag.
@@ -56,6 +68,8 @@ const DEFAULTS: Prefs = {
   railOpen: false,
   railTab: "outline",
   railConfigured: false,
+  leftWidth: 0,
+  rightWidth: 0,
   lineDefault: "none"
 };
 

@@ -37,6 +37,10 @@ export type TextDebugLevel = 0 | 1 | 2;
 interface ToolbarItem {
   el: HTMLElement;
   movable: boolean;
+  // The parent the control returns to when the overflow popover closes. Most
+  // live directly in the toolbar; the action tools live in `.tb-dock`, which is
+  // inline on desktop and a fixed bottom bar on mobile.
+  home: HTMLElement;
 }
 
 export class Toolbar {
@@ -57,13 +61,20 @@ export class Toolbar {
   private items: ToolbarItem[] = [];
   private overflowBtn!: HTMLButtonElement;
   private overflowMenu!: HTMLElement;
+  private sheetScrim!: HTMLElement;
+  private dock!: HTMLElement;
+  private toolsBtn!: HTMLButtonElement;
   private menuOpen = false;
   private raf = 0;
+  private mobile = false;
 
   private readonly onWinResize = (): void => this.scheduleRelayout();
   private readonly onDocPointerDown = (e: PointerEvent): void => {
     const t = e.target as Node;
-    if (!this.overflowMenu.contains(t) && !this.overflowBtn.contains(t)) this.closeMenu();
+    if (this.overflowMenu.contains(t)) return;
+    if (!this.mobile && this.overflowBtn.contains(t)) return;
+    if (this.mobile && this.toolsBtn.contains(t)) return;
+    this.closeMenu();
   };
   private readonly onMenuKey = (e: KeyboardEvent): void => {
     if (e.key === "Escape") this.closeMenu();
@@ -219,16 +230,30 @@ export class Toolbar {
     this.addItem(page, false);
     this.addItem(zoomBox, false);
     this.addItem(spacer, false);
-    this.addItem(occlude, true);
-    this.addItem(highlight, true);
-    this.addItem(line, true);
-    this.addItem(inspect, true);
-    this.addItem(reveal, true);
-    this.addItem(hideAll, true);
-    this.addItem(textDebug, true);
-    this.addItem(save, true);
+
+    // The dock holds the drawing/annotation tools plus the tools-sheet button.
+    // On desktop it is a transparent group that flows inline with the rest of
+    // the row (here, right after the flexible spacer); on mobile it is the fixed
+    // bottom action bar (see styles.css). Created after the spacer so it starts
+    // in its final desktop position and never flashes across the row on load.
+    this.dock = document.createElement("div");
+    this.dock.className = "tb-dock";
+    this.root.appendChild(this.dock);
+
     this.addItem(outlineBtn, true);
     this.addItem(notesBtn, true);
+    // Docked action tools: they stay visible on desktop too and never demote
+    // (the mobile bottom bar needs its primary actions pinned).
+    this.addDockItem(occlude);
+    this.addDockItem(highlight);
+    this.addDockItem(line);
+    this.addDockItem(reveal);
+    this.addDockItem(hideAll);
+    // Inspect is a debugging aid, not a primary action: keep it demotable so it
+    // lands in the "more" popover / all-tools sheet instead of the bottom bar.
+    this.addItem(inspect, true);
+    this.addItem(save, true);
+    this.addItem(textDebug, true);
     this.addItem(pageMode, true);
     this.addItem(theme, true);
 
@@ -240,6 +265,15 @@ export class Toolbar {
     );
     this.addItem(this.overflowBtn, false);
 
+    // Mobile-only: opens the toolbar overflow as a bottom "all tools" sheet.
+    this.toolsBtn = this.iconCtrl(
+      "grid",
+      "all tools",
+      { extra: "tb-tools-btn" },
+      () => this.toggleMenu()
+    );
+    this.addDockItem(this.toolsBtn);
+
     this.overflowMenu = document.createElement("div");
     this.overflowMenu.className = "tb-overflow";
     this.overflowMenu.id = "tb-overflow";
@@ -247,14 +281,29 @@ export class Toolbar {
     // Any click bubbling out of a menu item means the user acted; dismiss.
     this.overflowMenu.addEventListener("click", () => this.closeMenu());
 
+    // Dim backdrop for the mobile bottom sheet only; tapping it closes the
+    // sheet. Left hidden on desktop so the popover keeps its lightweight feel.
+    this.sheetScrim = document.createElement("div");
+    this.sheetScrim.className = "tb-sheet-scrim hidden";
+    this.sheetScrim.addEventListener("click", () => this.closeMenu());
+    this.root.appendChild(this.sheetScrim);
+
     this.applyState();
     this.observeSize();
     this.scheduleRelayout();
   }
 
   private addItem(el: HTMLElement, movable: boolean): void {
-    this.items.push({ el, movable });
+    this.items.push({ el, movable, home: this.root });
     this.root.appendChild(el);
+  }
+
+  // A control pinned into the dock. It is not part of the desktop demotion scan
+  // (which only ever moves controls parented to the row), so the drawing tools
+  // stay reachable; in mobile mode every dock control stays too.
+  private addDockItem(el: HTMLElement): void {
+    this.items.push({ el, movable: false, home: this.dock });
+    this.dock.appendChild(el);
   }
 
   // Builds an icon control and wires the small amount of metadata the rest of
@@ -308,8 +357,17 @@ export class Toolbar {
       new ResizeObserver(() => this.scheduleRelayout()).observe(this.root);
     }
     window.addEventListener("resize", this.onWinResize);
+    // Re-evaluate the desktop/mobile toolbar shape when crossing the breakpoint.
+    const mq = window.matchMedia("(max-width: 900px)");
+    mq.addEventListener("change", () => this.setMobile(mq.matches));
+    this.setMobile(mq.matches);
     // Web-font metrics can change widths after first paint; re-measure then.
     document.fonts?.ready.then(() => this.scheduleRelayout()).catch(() => {});
+  }
+
+  private setMobile(mobile: boolean): void {
+    this.mobile = mobile;
+    this.scheduleRelayout();
   }
 
   private scheduleRelayout(): void {
@@ -320,24 +378,53 @@ export class Toolbar {
     });
   }
 
-  // Reset every control inline, then demote the least important movable ones
-  // (from the end, prepended to the menu to preserve order) until the row fits.
+  // Reset every control to its home, then either build the fixed mobile layout
+  // or demote the least important movable controls until the desktop row fits.
   private relayout(): void {
     if (this.root.clientWidth <= 0) return;
     this.closeMenu();
-    for (const it of this.items) this.root.appendChild(it.el);
+    for (const it of this.items) it.home.appendChild(it.el);
     this.overflowBtn.classList.add("hidden");
 
-    const fits = (): boolean => this.root.scrollWidth <= this.root.clientWidth + 1;
-    if (fits()) return;
-
-    this.overflowBtn.classList.remove("hidden");
-    while (!fits()) {
-      const last = this.lastMovableInline();
-      if (!last) break;
-      this.overflowMenu.prepend(last);
+    if (this.mobile) {
+      this.layoutMobile();
+      return;
     }
-    if (!this.overflowMenu.children.length) this.overflowBtn.classList.add("hidden");
+
+    // Desktop: the dock floats back to its place on the right, just after the
+    // flexible spacer, so the drawing tools group with the other view actions.
+    this.root.querySelector(".tb-spacer")?.after(this.dock);
+
+    const fits = (): boolean => this.root.scrollWidth <= this.root.clientWidth + 1;
+    if (!fits()) {
+      this.overflowBtn.classList.remove("hidden");
+      while (!fits()) {
+        const last = this.lastMovableInline();
+        if (!last) break;
+        this.overflowMenu.prepend(last);
+      }
+      if (!this.overflowMenu.children.length) this.overflowBtn.classList.add("hidden");
+    }
+  }
+
+  // Mobile: the top row keeps only the identity controls, and every other
+  // control moves into the bottom "all tools" sheet so nothing is unreachable.
+  private layoutMobile(): void {
+    for (const it of this.items) {
+      if (it.home !== this.root) continue;
+      const el = it.el;
+      const keepInline =
+        el === this.overflowBtn ||
+        el.dataset.action === "go-home" ||
+        el.id === "tb-vault" ||
+        el.id === "tb-title" ||
+        el.classList.contains("tb-spacer") ||
+        el.classList.contains("tb-explorer-toggle");
+      if (keepInline) this.root.appendChild(el);
+      else this.overflowMenu.appendChild(el);
+    }
+    // The sheet is opened from the dock's grid button, not the ellipsis.
+    this.overflowBtn.classList.add("hidden");
   }
 
   private lastMovableInline(): HTMLElement | null {
@@ -355,16 +442,24 @@ export class Toolbar {
     }
     if (!this.overflowMenu.children.length) return;
     this.overflowMenu.classList.add("open");
-    this.overflowBtn.classList.add("active");
     this.menuOpen = true;
 
-    // Right-align the popover under the button, clamped to the viewport.
-    const r = this.overflowBtn.getBoundingClientRect();
-    const m = this.overflowMenu.getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8));
-    const top = Math.min(r.bottom + 6, window.innerHeight - m.height - 8);
-    this.overflowMenu.style.left = `${left}px`;
-    this.overflowMenu.style.top = `${Math.max(8, top)}px`;
+    if (this.mobile) {
+      // Bottom sheet: CSS pins it to the viewport bottom.
+      this.overflowMenu.classList.add("sheet");
+      this.sheetScrim.classList.remove("hidden");
+      this.toolsBtn.classList.add("active");
+    } else {
+      this.overflowMenu.classList.remove("sheet");
+      this.overflowBtn.classList.add("active");
+      // Right-align the popover under the button, clamped to the viewport.
+      const r = this.overflowBtn.getBoundingClientRect();
+      const m = this.overflowMenu.getBoundingClientRect();
+      const left = Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8));
+      const top = Math.min(r.bottom + 6, window.innerHeight - m.height - 8);
+      this.overflowMenu.style.left = `${left}px`;
+      this.overflowMenu.style.top = `${Math.max(8, top)}px`;
+    }
 
     window.addEventListener("pointerdown", this.onDocPointerDown, true);
     window.addEventListener("keydown", this.onMenuKey, true);
@@ -373,8 +468,10 @@ export class Toolbar {
   private closeMenu(): void {
     if (!this.menuOpen) return;
     this.menuOpen = false;
-    this.overflowMenu.classList.remove("open");
+    this.overflowMenu.classList.remove("open", "sheet");
     this.overflowBtn.classList.remove("active");
+    this.toolsBtn.classList.remove("active");
+    this.sheetScrim.classList.add("hidden");
     window.removeEventListener("pointerdown", this.onDocPointerDown, true);
     window.removeEventListener("keydown", this.onMenuKey, true);
   }
