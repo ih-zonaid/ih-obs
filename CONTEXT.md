@@ -235,7 +235,18 @@ Order is document position (page, then y).
 - Explorer tree, quick-open palette (⌘/Ctrl+P), home with recents + pins,
   per-document scroll memory, last-opened restore.
 - Zoom (buttons, ctrl+wheel, keys) with page-aware re-render; page indicator
-  with type-to-jump; light/dark theme.
+  with type-to-jump; light/dark theme; themed scrollbars (`color-scheme` +
+  `scrollbar-color` + `::-webkit-scrollbar`).
+- **Side layout**: a durable 46px activity spine on the far left (Files,
+  quick-open, Bookmarks — the latter filters the tree to pinned files) with the
+  explorer beside it. Both sidebars have a thin drag handle on their inside edge;
+  widths are clamped and persisted per vault (`leftWidth`/`rightWidth`), reset by
+  double-click. On the hub the spine/explorer are not rendered.
+- **Responsive**: at ≤900px the sidebars become slide-in drawers (with scrim,
+  Escape/tap-to-close, one at a time) and the toolbar splits into a slim top
+  identity row plus a fixed bottom action bar; every remaining control lives in a
+  labelled "all tools" bottom sheet. The app tracks the breakpoint with
+  `matchMedia` and restores the stored desktop layout when leaving mobile.
 - Only supported files are listed: `.md/.markdown/.mdx`, images, `.pdf`, `.json`.
   `.ihobs` is shown; other dotfiles, `.git`, `node_modules` are ignored.
 

@@ -28,6 +28,9 @@ const ICONS = {
     body: '<circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>',
     filled: true
   },
+  grid: {
+    body: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>'
+  },
   x: { body: '<path d="M6 6 18 18"/><path d="M18 6 6 18"/>' },
   check: { body: '<path d="m5 13 4 4L19 7"/>' },
   plus: { body: '<path d="M12 5v14"/><path d="M5 12h14"/>' },

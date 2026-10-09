@@ -14,6 +14,9 @@ export class Explorer {
   private expanded = new Set<string>();
   private pinned = new Set<string>();
   private filter = "";
+  // "Bookmarks" view: show only the pinned subtree. Composes with the text
+  // filter, so a search inside bookmarks works.
+  private pinnedOnly = false;
   private tree: FsNode | null = null;
 
   constructor(root: HTMLElement, handlers: ExplorerHandlers) {
@@ -27,13 +30,26 @@ export class Explorer {
     this.pinned = new Set(pinned);
   }
 
+  // Bookmarks view: restrict the tree to pinned files (and the folders that
+  // contain them) instead of showing the whole vault.
+  showPinnedOnly(on: boolean): void {
+    if (this.pinnedOnly === on) return;
+    this.pinnedOnly = on;
+  }
+
+  // Re-render from the cached tree (e.g. after toggling the bookmarks view)
+  // without walking the filesystem again.
+  rerender(): void {
+    if (this.tree) this.render(this.tree);
+  }
+
   render(tree: FsNode): void {
     this.tree = tree;
     this.root.innerHTML = "";
 
     const search = document.createElement("input");
     search.className = "explorer-search";
-    search.placeholder = "filter…";
+    search.placeholder = this.pinnedOnly ? "filter bookmarks…" : "filter…";
     search.value = this.filter;
     search.addEventListener("input", () => {
       this.filter = search.value.trim().toLowerCase();
@@ -54,30 +70,20 @@ export class Explorer {
     list.innerHTML = "";
     const children = this.tree.children ?? [];
     for (const child of children) {
-      const el = this.filter ? this.filteredNode(child, 0) : this.node(child, 0);
+      const el = this.node(child, 0);
       if (el) list.appendChild(el);
+    }
+    if (!list.children.length && this.pinnedOnly) {
+      const empty = document.createElement("div");
+      empty.className = "explorer-empty";
+      empty.textContent = "No bookmarks yet — star a file to pin it here.";
+      list.appendChild(empty);
     }
   }
 
   private matches(node: FsNode, q: string): boolean {
     if (node.name.toLowerCase().includes(q)) return true;
     return (node.children ?? []).some((c) => this.matches(c, q));
-  }
-
-  private filteredNode(node: FsNode, depth: number): HTMLElement | null {
-    if (!this.matches(node, this.filter)) return null;
-    if (node.kind === "file") {
-      return this.fileNode(node, depth);
-    }
-    const details = document.createElement("details");
-    details.className = "explorer-dir";
-    details.open = true;
-    details.appendChild(this.dirSummary(node, depth));
-    for (const child of node.children ?? []) {
-      const el = this.filteredNode(child, depth + 1);
-      if (el) details.appendChild(el);
-    }
-    return details;
   }
 
   private dirSummary(node: FsNode, depth: number): HTMLElement {
@@ -88,23 +94,31 @@ export class Explorer {
     return summary;
   }
 
-  private node(node: FsNode, depth: number): HTMLElement {
+  private node(node: FsNode, depth: number): HTMLElement | null {
+    if (this.filter && !this.matches(node, this.filter)) return null;
     if (node.kind === "directory") {
       const details = document.createElement("details");
       details.className = "explorer-dir";
       details.dataset.path = node.path;
-      details.open = this.expanded.has(node.path) || this.isAncestorOfActive(node.path);
+      details.open =
+        !!this.filter || this.pinnedOnly || this.expanded.has(node.path) || this.isAncestorOfActive(node.path);
       details.addEventListener("toggle", () => {
         if (details.open) this.expanded.add(node.path);
         else this.expanded.delete(node.path);
         this.handlers.onExpandedChange([...this.expanded]);
       });
       details.appendChild(this.dirSummary(node, depth));
+      const revealed: HTMLElement[] = [];
       for (const child of node.children ?? []) {
-        details.appendChild(this.node(child, depth + 1));
+        const el = this.node(child, depth + 1);
+        if (el) revealed.push(el);
       }
+      // In bookmarks view, hide folders with no pinned descendants.
+      if (this.pinnedOnly && !revealed.length) return null;
+      for (const el of revealed) details.appendChild(el);
       return details;
     }
+    if (this.pinnedOnly && !this.pinned.has(node.path)) return null;
     return this.fileNode(node, depth);
   }
 
