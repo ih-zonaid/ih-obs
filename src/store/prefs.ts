@@ -1,4 +1,5 @@
 import { hasChromeStorage, kvGet, kvRemove, kvSet } from "./kv";
+import { DEFAULT_OCCLUSION_COLOR, HIGHLIGHT_COLOR } from "./schema";
 
 export interface RecentEntry {
   path: string;
@@ -34,6 +35,11 @@ export interface Prefs {
   // then choose occlusion/highlight from the draft's right-click menu); a kind
   // commits each swipe immediately with that tag.
   lineDefault: LineDefault;
+  // Line tool's default color per kind. Kept separate so switching a swipe
+  // between occlusion and highlight restores the color that belongs to it,
+  // instead of carrying the other kind's hue along.
+  lineOcclusionColor: string;
+  lineHighlightColor: string;
 }
 
 export type LineDefault = "none" | "occlusion" | "highlight";
@@ -70,7 +76,9 @@ const DEFAULTS: Prefs = {
   railConfigured: false,
   leftWidth: 0,
   rightWidth: 0,
-  lineDefault: "none"
+  lineDefault: "none",
+  lineOcclusionColor: DEFAULT_OCCLUSION_COLOR,
+  lineHighlightColor: HIGHLIGHT_COLOR
 };
 
 export class PrefsStore {

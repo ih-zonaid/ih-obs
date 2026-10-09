@@ -133,6 +133,11 @@ export interface Mark extends EntityBase {
   weight?: number;
   // Presence of this object is what makes the mark a flashcard.
   card?: Card;
+  // A short markdown recall cue for this mark. Authorable on any mark; it shows
+  // as the question side when the mark is played as a card. Independent of
+  // `card` on purpose: "has a cue" and "is a card" are separate facts, so no
+  // promotion happens automatically.
+  cue?: string;
 }
 
 export type Entity = Box | Mark;
@@ -780,7 +785,8 @@ function migrateEntities(raw: unknown): Entity[] {
         color: typeof e.color === "string" ? e.color : undefined,
         path: Array.isArray(e.path) ? e.path : undefined,
         weight: typeof e.weight === "number" ? e.weight : undefined,
-        card: e.card
+        card: e.card,
+        cue: typeof e.cue === "string" && e.cue.trim() ? e.cue : undefined
       });
     } else {
       out.push({

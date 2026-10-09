@@ -8,6 +8,8 @@ export interface SegmentLayerOptions {
   getActive(): string | null;
   hasNote?(id: string): boolean;
   onNoteBadge?(id: string, kind: "box" | "mark", x: number, y: number): void;
+  onNoteHover?(id: string, kind: "box" | "mark", x: number, y: number): void;
+  onNoteLeave?(): void;
 }
 
 // Renders the structural geometry: container boxes and anchor lines. Marks live
@@ -169,6 +171,10 @@ export class SegmentLayer {
       e.stopPropagation();
       this.options.onNoteBadge?.(id, kind, e.clientX, e.clientY);
     });
+    badge.addEventListener("pointerenter", (e) => {
+      this.options.onNoteHover?.(id, kind, e.clientX, e.clientY);
+    });
+    badge.addEventListener("pointerleave", () => this.options.onNoteLeave?.());
     return badge;
   }
 

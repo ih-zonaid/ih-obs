@@ -1,6 +1,7 @@
 import { hexToRgba, INK_COLOR, INK_WEIGHT, isInk, type Mark, type Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
 import type { ReviewGrade } from "../srs";
+import { renderMarkdown } from "../notes/render";
 import { icon } from "./icons";
 
 export interface PlayerItem {
@@ -13,6 +14,8 @@ export interface PlayerItem {
   // The frame a card crop is clipped by. The up/down context controls expand
   // the crop within it, so revealing extra lines never leaks the other column.
   bounds?: Span | null;
+  // The mark's recall cue, shown as markdown above the crop while unrevealed.
+  cue?: string;
 }
 
 export interface PlayerSource {
@@ -29,6 +32,9 @@ export interface PlayerSource {
   // Marks that reveal together with this card, dropped from the sitting when it
   // is answered so one logical answer is not asked several times in a row.
   siblingIds?(id: string): string[];
+  // Vault path of the open document, so a cue's [[wikilinks]] resolve relative
+  // to the same place they would in a note.
+  path?(): string;
 }
 
 export interface PlayerHandlers {
@@ -149,10 +155,13 @@ export class Player {
 
     const stage = document.createElement("div");
     stage.className = "player-stage";
+    const cue = document.createElement("div");
+    cue.className = "player-cue md-body";
+    cue.id = "player-cue";
     const canvas = document.createElement("canvas");
     canvas.className = "player-canvas";
     canvas.id = "player-canvas";
-    stage.appendChild(canvas);
+    stage.append(cue, canvas);
 
     const foot = document.createElement("div");
     foot.className = "player-foot";
@@ -375,6 +384,14 @@ export class Player {
     const title = this.root.querySelector<HTMLElement>("#player-title");
     if (!canvas) return;
     if (title) title.textContent = `${item?.label || "question"} · ${this.index + 1}/${this.items.length}`;
+    // The cue (mark's question side) sits above the crop. Rebuilt each paint so
+    // a card without one collapses the element instead of leaving a gap.
+    const cueEl = this.root.querySelector<HTMLElement>("#player-cue");
+    if (cueEl) {
+      const cue = item?.cue?.trim();
+      cueEl.hidden = !cue;
+      cueEl.innerHTML = cue ? renderMarkdown(cue, this.source.path?.() ?? "") : "";
+    }
     // Update the controls now; marks are drawn after the fresh crop lands so we
     // never paint the new question's marks over the previous question's image.
     this.syncRevealButton();

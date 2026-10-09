@@ -38,6 +38,13 @@ export interface OverlayOptions {
   hasNote?(id: string): boolean;
   // Opens the note for a mark from its indicator dot.
   onNote?(id: string, x: number, y: number): void;
+  // Hovering the indicator dot: preview the note body; on leave, drop it.
+  onNoteHover?(id: string, x: number, y: number): void;
+  onNoteLeave?(): void;
+  // Hovering the mark body: preview its cue. Same dwell/grace handling as the
+  // note dot; the corner dot's own hover wins when the pointer is over it.
+  onCueHover?(id: string, x: number, y: number): void;
+  onCueLeave?(): void;
 }
 
 export class Overlay {
@@ -78,6 +85,11 @@ export class Overlay {
   // strokes and pages, like the line tool's band height.
   private inkColor = INK_COLOR;
   private inkWeight = INK_WEIGHT;
+  // Line tool's default color per kind, set from its right-click menu and from
+  // prefs on load. Kept separate so an occlusion swipe and a highlight swipe
+  // each keep their own hue.
+  private lineOcclusionColor = DEFAULT_OCCLUSION_COLOR;
+  private lineHighlightColor = HIGHLIGHT_COLOR;
   private drawing: {
     surface: number;
     startX: number;
@@ -213,6 +225,18 @@ export class Overlay {
     this.lineDefault = kind;
   }
 
+  // The line tool's default color per kind, set from its right-click menu and
+  // restored from prefs on load. Applied to the swipes (and free rects) a tool
+  // commits from then on.
+  setLineColors(colors: { occlusion?: string; highlight?: string }): void {
+    if (colors.occlusion) this.lineOcclusionColor = colors.occlusion;
+    if (colors.highlight) this.lineHighlightColor = colors.highlight;
+  }
+
+  getLineColors(): { occlusion: string; highlight: string } {
+    return { occlusion: this.lineOcclusionColor, highlight: this.lineHighlightColor };
+  }
+
   // Pen color/width, set from the pen's right-click menu. Sticky for future
   // strokes; existing strokes keep the values they were drawn with.
   setInkStyle(color: string, weight?: number): void {
@@ -282,7 +306,7 @@ export class Overlay {
       tags: [kind],
       label: "",
       spans: [span],
-      color: kind === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
+      color: kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor,
       owner: this.options.ownerFor(span) || PAGE_OWNER,
       revealed: false
     };
@@ -565,7 +589,7 @@ export class Overlay {
       tags: [this.mode === "highlight" ? "highlight" : "occlusion"],
       label: "",
       spans: [span],
-      color: this.mode === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR,
+      color: this.mode === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor,
       owner: this.options.ownerFor(span) || PAGE_OWNER,
       revealed: false
     };
@@ -608,11 +632,13 @@ export class Overlay {
   }
 
   // Flips a mark between occlusion and highlight in place, so a mis-toggled
-  // mark can be fixed without deleting and redrawing it.
+  // mark can be fixed without deleting and redrawing it. The color is reset to
+  // that kind's default, so a converted mark never keeps the other kind's hue.
   setKind(id: string, kind: MarkKind): void {
     const r = this.marks.find((x) => x.id === id);
     if (!r) return;
     setMarkKind(r, kind);
+    r.color = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
     this.paint();
     this.options.onChange(this.marks);
   }
@@ -701,13 +727,17 @@ export class Overlay {
       if (this.options.hasNote?.(r.id)) {
         const dot = document.createElement("span");
         dot.className = "ihobs-region-note";
-        dot.title = "note — click to open";
+        dot.title = "note or cue — click to open";
         dot.appendChild(icon("pencil", 8));
         dot.addEventListener("pointerdown", (e) => e.stopPropagation());
         dot.addEventListener("click", (e) => {
           e.stopPropagation();
           this.options.onNote?.(r.id, e.clientX, e.clientY);
         });
+        dot.addEventListener("pointerenter", (e) => {
+          this.options.onNoteHover?.(r.id, e.clientX, e.clientY);
+        });
+        dot.addEventListener("pointerleave", () => this.options.onNoteLeave?.());
         el.appendChild(dot);
       }
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -718,6 +748,21 @@ export class Overlay {
           this.reveal(r.id, !r.revealed);
         }
       });
+      // A cue lives on the mark body (not a badge), so hovering the mark is what
+      // previews it. `pointerover` (which bubbles, unlike pointerenter) lets us
+      // ignore the corner dot: only a target that is the mark itself counts, so
+      // the dot's own note hover is never clobbered by the cue.
+      if (r.cue) {
+        el.addEventListener("pointerover", (e) => {
+          if (e.target !== el) return;
+          this.options.onCueHover?.(r.id, e.clientX, e.clientY);
+        });
+        el.addEventListener("pointerout", (e) => {
+          if (e.target !== el) return;
+          if (el.contains(e.relatedTarget as Node)) return;
+          this.options.onCueLeave?.();
+        });
+      }
       el.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -762,6 +807,12 @@ export class Overlay {
       if (e.altKey) this.remove(r.id);
       else this.reveal(r.id, !r.revealed);
     });
+    if (r.cue) {
+      hit.addEventListener("pointerenter", (e) =>
+        this.options.onCueHover?.(r.id, e.clientX, e.clientY)
+      );
+      hit.addEventListener("pointerleave", () => this.options.onCueLeave?.());
+    }
     for (const el of [hit, path]) {
       el.addEventListener("contextmenu", (e) => {
         e.preventDefault();

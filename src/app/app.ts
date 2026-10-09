@@ -81,7 +81,7 @@ import { Home } from "../ui/home";
 import { icon } from "../ui/icons";
 import { Outline, UNGROUPED_DECK } from "../ui/outline";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
-import { openNoteEditor } from "../ui/notePopover";
+import { hideNotePreview, openNoteEditor, showNotePreview } from "../ui/notePopover";
 import { Palette } from "../ui/palette";
 import { Player, type PlayerItem } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
@@ -102,6 +102,18 @@ import {
 import "../ui/styles.css";
 
 const SCROLL_PREFIX = "ihobs:scroll:";
+// Note hover preview: wait this long on an indicator before showing the card,
+// then this long after leaving before hiding it (so the pointer can reach the
+// card's Edit button).
+const NOTE_DWELL_MS = 220;
+const NOTE_GRACE_MS = 180;
+
+// What the shared hover-preview controller should show after the dwell. A note
+// previews a Note row and edits via openNoteTarget; a cue previews a mark's cue
+// and edits via openCueEditor.
+type PreviewRequest =
+  | { kind: "note"; targetKind: NoteTargetKind; id: string; x: number; y: number }
+  | { kind: "cue"; markId: string; x: number; y: number };
 
 function findNode(nodes: OutlineNode[], id: string): OutlineNode | null {
   for (const n of nodes) {
@@ -206,6 +218,13 @@ export class App {
 
   private view: DocView | null = null;
   private overlay: Overlay | null = null;
+  // Note hover-preview: a dwell timer before showing (so sweeping the pointer
+  // across indicators doesn't flash cards) and a short grace before hiding (so
+  // the pointer can travel onto the card to reach its Edit button). One
+  // controller serves both note previews and mark-cue previews.
+  private notePreviewTimer: number | null = null;
+  private previewReq: PreviewRequest | null = null;
+  private notePreviewOver = false;
   private segLayer: SegmentLayer | null = null;
   private segDrawer: SegmentDrawer | null = null;
   private transform: Transform | null = null;
@@ -230,6 +249,9 @@ export class App {
   private scrollMemo = new Map<string, number>();
   private pageMode: PageMode = "off";
   private lineDefault: LineDefault = "none";
+  // Default colors for the line/free tools, one per kind, restored from prefs.
+  private lineOcclusionColor = DEFAULT_OCCLUSION_COLOR;
+  private lineHighlightColor = HIGHLIGHT_COLOR;
   // When set, a floating, real <img> publishes the current page so a
   // page-context AI sidebar can fetch it (canvas pixels are invisible to those
   // readers). Held so page changes can refresh it and teardown can remove it.
@@ -243,7 +265,12 @@ export class App {
 
   constructor(mount: HTMLElement) {
     this.shell = buildShell(mount);
-    this.onScroll = () => this.memoScroll();
+    this.onScroll = () => {
+      this.memoScroll();
+      // The preview card is position:fixed, so it would detach from its note
+      // as the page scrolls under it; drop it instead of letting it drift.
+      this.cancelNoteHover();
+    };
     this.shell.viewer.addEventListener("scroll", this.onScroll, { passive: true });
     this.shell.viewer.addEventListener("contextmenu", (e) => this.viewerContext(e));
     // Right-click's mousedown can collapse the selection before contextmenu
@@ -388,7 +415,9 @@ export class App {
       onBrowseDeck: (id) => this.browseDeck(id),
       docPath: () => this.currentPath ?? "",
       onNote: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y),
-      hasNote: (id) => this.hasNote(id)
+      hasNote: (id) => this.hasNote(id),
+      onNoteHover: (id, kind, x, y) => this.hoverNote(kind, id, x, y),
+      onNoteLeave: () => this.leaveNote()
     });
 
     this.player = new Player(
@@ -400,7 +429,8 @@ export class App {
         marksFor: (id) => this.marksForPlayerItem(id),
         contextMarks: (id, crop) => this.contextMarksForCard(id, crop),
         preview: (id) => this.cardPreviews(id),
-        siblingIds: (id) => this.siblingCardIds(id)
+        siblingIds: (id) => this.siblingCardIds(id),
+        path: () => this.currentPath ?? ""
       },
       {
         onClose: () => undefined,
@@ -869,6 +899,8 @@ export class App {
     this.railOpen = prefs.railOpen;
     this.railTab = prefs.railTab;
     this.lineDefault = prefs.lineDefault ?? "none";
+    this.lineOcclusionColor = prefs.lineOcclusionColor ?? DEFAULT_OCCLUSION_COLOR;
+    this.lineHighlightColor = prefs.lineHighlightColor ?? HIGHLIGHT_COLOR;
     this.leftWidth = prefs.leftWidth > 0 ? prefs.leftWidth : 0;
     this.rightWidth = prefs.rightWidth > 0 ? prefs.rightWidth : 0;
     this.leftTab = "files";
@@ -1105,11 +1137,16 @@ export class App {
       ownerFor: (geom) => this.resolveOwner(geom),
       ownerLabel: (owner) => this.ownerLabel(owner),
       hasNote: (id) => this.hasNote(id),
-      onNote: (id, x, y) => this.openNoteTarget("mark", id, x, y)
+      onNote: (id, x, y) => this.openMarkAttachment(id, x, y),
+      onNoteHover: (id, x, y) => this.hoverMarkAttachment(id, x, y),
+      onNoteLeave: () => this.leaveNote(),
+      onCueHover: (id, x, y) => this.hoverCue(id, x, y),
+      onCueLeave: () => this.leaveNote()
     });
     overlay.setMode(this.mode);
     overlay.setInspect(this.inspect);
     overlay.setLineDefault(this.lineDefault);
+    overlay.setLineColors({ occlusion: this.lineOcclusionColor, highlight: this.lineHighlightColor });
     this.overlay = overlay;
 
     this.entities = model.entities;
@@ -1122,7 +1159,9 @@ export class App {
       onContext: (id, kind, x, y) => this.openEntryMenu(id, kind, x, y),
       getActive: () => this.activeId,
       hasNote: (id) => this.hasNote(id),
-      onNoteBadge: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y)
+      onNoteBadge: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y),
+      onNoteHover: (id, kind, x, y) => this.hoverNote(kind, id, x, y),
+      onNoteLeave: () => this.leaveNote()
     });
     this.segLayer.setData(this.entities);
     this.segLayer.setVisible(this.boxes().length > 0);
@@ -1437,7 +1476,12 @@ export class App {
           void this.persist();
         }
       },
-      ...this.noteMenuItems("mark", id, clientX, clientY)
+      ...this.noteMenuItems("mark", id, clientX, clientY),
+      {
+        label: mark.cue ? "Edit cue…" : "Add cue…",
+        hint: "card question side",
+        onSelect: () => this.openCueEditor(id, { x: clientX, y: clientY })
+      }
     ];
     // Ink is a stroke, not a cover; it cannot be flipped to occlusion/highlight.
     if (!ink) {
@@ -1698,7 +1742,8 @@ export class App {
         crop: cardCrop(m, entities),
         // The frame bounds the up/down context reveal, so it cannot grow into
         // the neighbouring column. Frame-less cards are unbounded (page edge).
-        bounds: frame?.spans[0] ?? null
+        bounds: frame?.spans[0] ?? null,
+        cue: m.cue
       };
     });
     this.player.start(this.reviewOrder(items));
@@ -1929,7 +1974,7 @@ export class App {
   // the selected words. With a word-level OCR text layer this is exactly the
   // phrase box; no grouping is needed.
   private buildSelectionMarks(captured: CapturedSelection, kind: MarkKind): Mark[] {
-    const color = kind === "highlight" ? HIGHLIGHT_COLOR : DEFAULT_OCCLUSION_COLOR;
+    const color = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
     return captured.hulls.map((h) => ({
       kind: "mark",
       id: newMarkId(),
@@ -2053,6 +2098,9 @@ export class App {
 
   private hasNote(id: string): boolean {
     const mark = this.markById(id);
+    // A cue (card question side) also shows the corner dot, so a cue-only mark
+    // still advertises that something is attached to it.
+    if (mark?.cue?.trim()) return true;
     if (mark?.groupId && this.notes.some((n) => n.target === mark.groupId)) return true;
     return this.notes.some((n) => n.target === id);
   }
@@ -2090,6 +2138,7 @@ export class App {
   // Opens the editor for an anchor, creating the note on first save. Existing
   // notes open prefilled; an editor on a blank note deletes it when cleared.
   private openNoteTarget(kind: NoteTargetKind, id: string, x: number, y: number): void {
+    this.cancelNoteHover();
     const anchor = this.noteAnchor(kind, id);
     const existing = this.notes.find((n) => n.target === anchor.target);
     const label = this.noteLabel(anchor.kind, anchor.target);
@@ -2105,7 +2154,55 @@ export class App {
     });
   }
 
+  // The corner dot is shared by notes and cues. Clicking it opens whichever the
+  // mark actually has, preferring the note (the richer attachment); hovering it
+  // previews the same thing.
+  private openMarkAttachment(id: string, x: number, y: number): void {
+    if (this.notes.some((n) => n.target === this.noteAnchor("mark", id).target)) {
+      this.openNoteTarget("mark", id, x, y);
+    } else {
+      this.openCueEditor(id, { x, y });
+    }
+  }
+
+  private hoverMarkAttachment(id: string, x: number, y: number): void {
+    if (this.notes.some((n) => n.target === this.noteAnchor("mark", id).target)) {
+      this.hoverNote("mark", id, x, y);
+    } else {
+      this.hoverCue(id, x, y);
+    }
+  }
+
+  // The card cue editor. Reuses the note editor (Write/Preview, markdown,
+  // preview-first) but stores the body on the mark, not in the notes list. A
+  // cleared body removes the cue; there is no Delete button since clearing is
+  // the removal.
+  private openCueEditor(markId: string, anchor: { x: number; y: number }): void {
+    this.cancelNoteHover();
+    const mark = this.markById(markId);
+    if (!mark) return;
+    const label = this.noteLabel("mark", markId);
+    const page = mark.spans[0]?.page;
+    openNoteEditor({
+      title: `Cue · ${label}${page !== undefined ? ` · p${page + 1}` : ""}`,
+      initial: mark.cue ?? "",
+      path: this.currentPath ?? "",
+      anchor,
+      placeholder: "card cue…  shown as the question side (markdown, [[link]])",
+      onSave: (body) => {
+        const m = this.markById(markId);
+        if (!m) return;
+        const text = body.trim();
+        if (text) m.cue = text;
+        else delete m.cue;
+        void this.persist();
+        this.overlay?.repaint();
+      }
+    });
+  }
+
   private editNote(noteId: string, anchor: { x: number; y: number }): void {
+    this.cancelNoteHover();
     const note = this.notes.find((n) => n.id === noteId);
     if (!note) return;
     const label = this.noteLabel(note.targetKind, note.target);
@@ -2118,6 +2215,104 @@ export class App {
       onSave: (body) => void this.saveNote(note.targetKind, note.target, body, note),
       onDelete: () => void this.deleteNote(note.id)
     });
+  }
+
+  // Hover preview: after a short dwell on an indicator, show the note body
+  // read-only. A dwell (rather than immediate) avoids flashing cards while the
+  // pointer sweeps across marked notes.
+  private hoverNote(kind: NoteTargetKind, id: string, x: number, y: number): void {
+    const anchor = this.noteAnchor(kind, id);
+    const note = this.notes.find((n) => n.target === anchor.target);
+    if (!note?.body.trim()) return;
+    this.clearNotePreviewTimer();
+    this.requestPreview({ kind: "note", targetKind: kind, id, x, y });
+  }
+
+  // Hover preview for a mark's cue. Shares the dwell/grace machinery with the
+  // note preview so the two never fight over the one card.
+  private hoverCue(markId: string, x: number, y: number): void {
+    const mark = this.markById(markId);
+    if (!mark?.cue?.trim()) return;
+    this.clearNotePreviewTimer();
+    this.requestPreview({ kind: "cue", markId, x, y });
+  }
+
+  private requestPreview(req: PreviewRequest): void {
+    this.previewReq = req;
+    this.notePreviewOver = false;
+    this.notePreviewTimer = window.setTimeout(() => {
+      this.notePreviewTimer = null;
+      this.showPreviewCard();
+    }, NOTE_DWELL_MS);
+  }
+
+  private showPreviewCard(): void {
+    const req = this.previewReq;
+    if (!req) return;
+    if (req.kind === "note") {
+      const anchor = this.noteAnchor(req.targetKind, req.id);
+      const note = this.notes.find((n) => n.target === anchor.target);
+      if (!note?.body.trim()) return;
+      const label = this.noteLabel(anchor.kind, anchor.target);
+      const page = this.notePage(anchor.kind, anchor.target);
+      showNotePreview({
+        title: `Note · ${label}${page !== undefined ? ` · p${page + 1}` : ""}`,
+        quote: note.quote,
+        body: note.body,
+        path: this.currentPath ?? "",
+        anchor: { x: req.x, y: req.y + 6 },
+        onHoverChange: (over) => this.previewHover(over),
+        onEdit: () => this.openNoteTarget(req.targetKind, req.id, req.x, req.y)
+      });
+      return;
+    }
+    const mark = this.markById(req.markId);
+    if (!mark?.cue?.trim()) return;
+    const label = this.noteLabel("mark", req.markId);
+    const page = mark.spans[0]?.page;
+    showNotePreview({
+      title: `Cue · ${label}${page !== undefined ? ` · p${page + 1}` : ""}`,
+      body: mark.cue,
+      path: this.currentPath ?? "",
+      anchor: { x: req.x, y: req.y + 6 },
+      onHoverChange: (over) => this.previewHover(over),
+      onEdit: () => this.openCueEditor(req.markId, { x: req.x, y: req.y })
+    });
+  }
+
+  private previewHover(over: boolean): void {
+    this.notePreviewOver = over;
+    if (over) this.clearNotePreviewTimer();
+    else this.scheduleHideNotePreview();
+  }
+
+  // Pointer left the indicator: defer hiding so the user can travel onto the
+  // card (its Edit button is the one interactive part). Cancelled on re-enter.
+  private leaveNote(): void {
+    this.scheduleHideNotePreview();
+  }
+
+  private scheduleHideNotePreview(): void {
+    if (this.notePreviewOver) return;
+    this.clearNotePreviewTimer();
+    this.notePreviewTimer = window.setTimeout(() => {
+      this.notePreviewTimer = null;
+      this.cancelNoteHover();
+    }, NOTE_GRACE_MS);
+  }
+
+  private cancelNoteHover(): void {
+    this.clearNotePreviewTimer();
+    this.previewReq = null;
+    this.notePreviewOver = false;
+    hideNotePreview();
+  }
+
+  private clearNotePreviewTimer(): void {
+    if (this.notePreviewTimer !== null) {
+      window.clearTimeout(this.notePreviewTimer);
+      this.notePreviewTimer = null;
+    }
   }
 
   private async saveNote(
@@ -2490,8 +2685,8 @@ export class App {
     const items: ContextMenuEntry[] = [];
     if (withDraft && this.overlay?.hasPending()) {
       items.push(
-        { label: "Use as occlusion", swatch: DEFAULT_OCCLUSION_COLOR, onSelect: () => commit("occlusion") },
-        { label: "Use as highlight", swatch: HIGHLIGHT_COLOR, onSelect: () => commit("highlight") },
+        { label: "Use as occlusion", swatch: this.lineOcclusionColor, onSelect: () => commit("occlusion") },
+        { label: "Use as highlight", swatch: this.lineHighlightColor, onSelect: () => commit("highlight") },
         "separator"
       );
     }
@@ -2499,14 +2694,14 @@ export class App {
       { label: "Default for new lines", disabled: true, onSelect: () => undefined },
       {
         label: "Occlusion",
-        swatch: DEFAULT_OCCLUSION_COLOR,
+        swatch: this.lineOcclusionColor,
         checked: this.lineDefault === "occlusion",
         hint: this.lineDefault === "occlusion" ? "current" : undefined,
         onSelect: () => void this.setLineDefault("occlusion", true)
       },
       {
         label: "Highlight",
-        swatch: HIGHLIGHT_COLOR,
+        swatch: this.lineHighlightColor,
         checked: this.lineDefault === "highlight",
         hint: this.lineDefault === "highlight" ? "current" : undefined,
         onSelect: () => void this.setLineDefault("highlight", true)
@@ -2516,9 +2711,78 @@ export class App {
         checked: this.lineDefault === "none",
         hint: this.lineDefault === "none" ? "current" : undefined,
         onSelect: () => void this.setLineDefault("none", false)
+      },
+      "separator",
+      { label: "Default colors", disabled: true, onSelect: () => undefined },
+      {
+        label: "Occlusion color…",
+        swatch: this.lineOcclusionColor,
+        onSelect: () => this.openLineColorMenu("occlusion", clientX, clientY)
+      },
+      {
+        label: "Highlight color…",
+        swatch: this.lineHighlightColor,
+        onSelect: () => this.openLineColorMenu("highlight", clientX, clientY)
       }
     );
     openContextMenu({ title: withDraft ? "Line — choose a kind" : "Line tool", items }, clientX, clientY);
+  }
+
+  // Palette + custom picker for one line-tool default color. Reopens in place
+  // of the line menu (there is no submenu primitive; a pick reopens the line
+  // menu so the new swatch is visible immediately).
+  private openLineColorMenu(kind: MarkKind, clientX: number, clientY: number): void {
+    const names = ["Blue", "Yellow", "Green", "Pink", "Purple"];
+    const current = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
+    const items: ContextMenuEntry[] = [];
+    MARK_PALETTE.forEach((color, i) => {
+      items.push({
+        label: names[i] ?? color,
+        swatch: color,
+        checked: current === color,
+        onSelect: () => {
+          void this.setLineColor(kind, color);
+          this.openLineMenu(clientX, clientY, false);
+        }
+      });
+    });
+    items.push({
+      label: "Custom…",
+      onSelect: () => this.pickLineColor(kind, () => this.openLineMenu(clientX, clientY, false))
+    });
+    openContextMenu(
+      { title: kind === "highlight" ? "Highlight color" : "Occlusion color", items },
+      clientX,
+      clientY
+    );
+  }
+
+  // Persists a line-tool default color and applies it to the overlay, so the
+  // next swipe (and any rect drawn while that kind is active) uses it.
+  private async setLineColor(kind: MarkKind, color: string): Promise<void> {
+    if (kind === "highlight") {
+      this.lineHighlightColor = color;
+      this.overlay?.setLineColors({ highlight: color });
+      await this.prefs.update({ lineHighlightColor: color });
+    } else {
+      this.lineOcclusionColor = color;
+      this.overlay?.setLineColors({ occlusion: color });
+      await this.prefs.update({ lineOcclusionColor: color });
+    }
+  }
+
+  private pickLineColor(kind: MarkKind, done: () => void): void {
+    const current = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : DEFAULT_OCCLUSION_COLOR;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    input.style.pointerEvents = "none";
+    document.body.appendChild(input);
+    input.addEventListener("input", () => void this.setLineColor(kind, input.value));
+    input.addEventListener("blur", () => window.setTimeout(() => { input.remove(); done(); }, 0));
+    input.click();
   }
 
   // Sets the line tool's next-swipe kind for this vault. `commitDraft` also

@@ -9,8 +9,26 @@ export interface NoteEditorOptions {
   // relative to the same place a document's links would.
   path?: string;
   anchor: { x: number; y: number };
+  // Open read-only when the note already has a body (the common case is
+  // reviewing, not rewriting). A blank note opens ready to type.
+  startInPreview?: boolean;
+  // Overrides the textarea placeholder, so a card cue can read as a cue rather
+  // than as a freeform note.
+  placeholder?: string;
   onSave(body: string): void;
   onDelete?(): void;
+}
+
+export interface NotePreviewOptions {
+  title?: string;
+  quote?: string;
+  body: string;
+  path?: string;
+  anchor: { x: number; y: number };
+  // Fired as the pointer enters/leaves the card, so the caller can keep it
+  // open while the user travels from the indicator toward the Edit button.
+  onHoverChange?(over: boolean): void;
+  onEdit(): void;
 }
 
 // A small markdown editor with a Write/Preview toggle. Saving an empty body on
@@ -30,6 +48,7 @@ export class NotePopover {
 
   open(opts: NoteEditorOptions): void {
     this.hide();
+    hideNotePreview();
     const el = document.createElement("div");
     el.className = "note-pop";
 
@@ -50,7 +69,7 @@ export class NotePopover {
     const tabs = document.createElement("div");
     tabs.className = "note-pop-tabs";
     const writeTab = document.createElement("button");
-    writeTab.className = "note-pop-tab active";
+    writeTab.className = "note-pop-tab";
     writeTab.appendChild(icon("pencil", 12));
     writeTab.appendChild(textNode("Write"));
     const previewTab = document.createElement("button");
@@ -63,7 +82,8 @@ export class NotePopover {
     const body = document.createElement("textarea");
     body.className = "note-pop-input md-body";
     body.value = opts.initial;
-    body.placeholder = "markdown note…  **bold**, *italic*, `code`, - list, [[link]]";
+    body.placeholder =
+      opts.placeholder ?? "markdown note…  **bold**, *italic*, `code`, - list, [[link]]";
     body.spellcheck = false;
 
     const preview = document.createElement("div");
@@ -118,6 +138,20 @@ export class NotePopover {
     writeTab.addEventListener("click", showWrite);
     previewTab.addEventListener("click", showPreview);
 
+    // Preview-first for existing notes; Write for a blank one, so the caret is
+    // ready. Clicking the rendered preview jumps straight into editing.
+    const hasContent = opts.initial.trim().length > 0;
+    if (opts.startInPreview ?? hasContent) {
+      showPreview();
+      preview.style.cursor = "text";
+      preview.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest("a")) return;
+        showWrite();
+      });
+    } else {
+      showWrite();
+    }
+
     body.addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
@@ -142,6 +176,7 @@ export class NotePopover {
     window.addEventListener("resize", this.onReflow);
 
     requestAnimationFrame(() => {
+      if (body.hidden) return;
       body.focus();
       body.setSelectionRange(body.value.length, body.value.length);
     });
@@ -185,6 +220,96 @@ export function hideNoteEditor(): void {
 
 export function isNoteEditorOpen(): boolean {
   return popover.isOpen();
+}
+
+// A read-only rendered note shown while hovering its indicator, so the body is
+// legible without committing to a click. The card is inert (pointer-events:
+// none) except for an Edit affordance, so it can never swallow a click meant
+// for the mark underneath; moving toward the card to click Edit keeps it open
+// via the shared leave-grace timer in the app.
+export class NotePreview {
+  private el: HTMLElement | null = null;
+  // The card is inert (pointer-events: none), so clicks fall through to the
+  // page; a press anywhere outside the card should dismiss it. The Edit button
+  // re-enables pointer events, so a press on it is "inside" and left alone.
+  private readonly onDocPointerDown = (e: PointerEvent): void => {
+    if (this.el && !this.el.contains(e.target as Node)) this.hide();
+  };
+
+  open(opts: NotePreviewOptions): void {
+    this.hide();
+    const el = document.createElement("div");
+    el.className = "note-hover";
+
+    if (opts.title) {
+      const head = document.createElement("div");
+      head.className = "note-hover-head";
+      head.textContent = opts.title;
+      el.appendChild(head);
+    }
+
+    if (opts.quote?.trim()) {
+      const quote = document.createElement("blockquote");
+      quote.className = "note-hover-quote";
+      quote.textContent = opts.quote.trim();
+      el.appendChild(quote);
+    }
+
+    const body = document.createElement("div");
+    body.className = "note-hover-body md-body";
+    body.innerHTML = renderMarkdown(opts.body, opts.path ?? "");
+    el.appendChild(body);
+
+    const foot = document.createElement("div");
+    foot.className = "note-hover-foot";
+    const edit = document.createElement("button");
+    edit.className = "tb-btn note-hover-edit";
+    edit.appendChild(icon("pencil", 12));
+    edit.appendChild(textNode("Edit"));
+    edit.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.hide();
+      opts.onEdit();
+    });
+    foot.appendChild(edit);
+    el.appendChild(foot);
+
+    document.body.appendChild(el);
+    this.el = el;
+    this.place(el, opts.anchor.x, opts.anchor.y);
+    el.addEventListener("pointerenter", () => opts.onHoverChange?.(true));
+    el.addEventListener("pointerleave", () => opts.onHoverChange?.(false));
+    window.addEventListener("pointerdown", this.onDocPointerDown, true);
+  }
+
+  private place(el: HTMLElement, x: number, y: number): void {
+    const rect = el.getBoundingClientRect();
+    const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+    let top = y;
+    if (top + rect.height > window.innerHeight - 8) top = Math.max(8, y - rect.height - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }
+
+  hide(): void {
+    window.removeEventListener("pointerdown", this.onDocPointerDown, true);
+    this.el?.remove();
+    this.el = null;
+  }
+
+  isOpen(): boolean {
+    return !!this.el;
+  }
+}
+
+const preview = new NotePreview();
+
+export function showNotePreview(opts: NotePreviewOptions): void {
+  preview.open(opts);
+}
+
+export function hideNotePreview(): void {
+  preview.hide();
 }
 
 function textNode(text: string): Text {

@@ -52,6 +52,8 @@ export interface OutlineHandlers {
   // Opens (or creates) the note for an entry from its row badge.
   onNote?(id: string, kind: "box" | "mark", x: number, y: number): void;
   hasNote?(id: string): boolean;
+  onNoteHover?(id: string, kind: "box" | "mark", x: number, y: number): void;
+  onNoteLeave?(): void;
 }
 
 // A scope row's play verb and its tooltip, derived from its role.
@@ -371,6 +373,11 @@ export class Outline {
         const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
         this.handlers.onNote?.(node.id, "box", rect.left, rect.bottom + 4);
       });
+      note.addEventListener("pointerenter", (ev) => {
+        const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+        this.handlers.onNoteHover?.(node.id, "box", rect.left, rect.bottom + 4);
+      });
+      note.addEventListener("pointerleave", () => this.handlers.onNoteLeave?.());
       row.appendChild(note);
     }
 
