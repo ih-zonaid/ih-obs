@@ -209,9 +209,9 @@ Order is document position (page, then y).
   question's span from the page image, paints its marks, and lets the user
   reveal/navigate. Scope = a deck's cards, the selected questions container's
   descendants, a single question, or all questions. Keyboard: ←/→ navigate,
-  Space/Enter reveal, `1`–`4` grade, Esc close. A question shows marks attached
-  to it plus marks geometrically inside it that aren't owned by another question
-  (`marksForBox` in `app.ts`).
+  Space/Enter reveal, `1`–`4` grade, `n` note, Esc close. A question shows marks
+  attached to it plus marks geometrically inside it that aren't owned by another
+  question (`marksForBox` in `app.ts`).
 - **Cards** (schema v6): a mark with `card` set is a flashcard; its question side
   is `card.context` or a full-width band, clipped by `card.frame`. A `frame` box
   plays the cards inside it (▶ in the outline, or the box context menu); a mark's
@@ -221,6 +221,17 @@ Order is document position (page, then y).
   schedule and buries reveal-group siblings. See §3b.
 - **Decks**: each outline row is a playable deck with a due/new badge; see §3c.
 - **Reveal controls**: toggle reveal, hide all, per-mark click toggle.
+- **Notes in play** (schema unchanged): a note strip under the crop, shown only
+  once the answer is revealed — a note usually restates the answer, so it is
+  gated exactly like the grade row. It renders the note as markdown and offers
+  `add note` / `note` (or `n`), which swaps the strip for an inline textarea:
+  ⌘/Ctrl+Enter or blur commits, Esc cancels, an empty body removes the note.
+  The item id is resolved through `playerNoteAnchor`, so a note written in play
+  lands on the same target the overlay's note editor would use (a grouped mark
+  writes to its reveal group) and appears in the notes panel and outline dot.
+  Because the note strip is reveal-gated, the player's window key handler must
+  ignore keys from a text field — otherwise the space in a note would hide the
+  answer and take the strip down with it.
 
 ### Debugging / authoring aids
 - **Inspect mode**: paints each mark's resolved owner as a badge, and shows a

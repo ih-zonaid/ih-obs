@@ -18,6 +18,13 @@ export interface PlayerItem {
   cue?: string;
 }
 
+// What the note strip shows for the current item. Kept to the body alone: play
+// mode renders the note in place rather than naming it, and the item already
+// carries its own label in the head.
+export interface PlayerNote {
+  body: string;
+}
+
 export interface PlayerSource {
   loadPage(page: number, scale: number): Promise<PageImage | null>;
   marksFor(boxId: string): Mark[];
@@ -35,6 +42,11 @@ export interface PlayerSource {
   // Vault path of the open document, so a cue's [[wikilinks]] resolve relative
   // to the same place they would in a note.
   path?(): string;
+  // The note attached to this item, read on reveal and written from the strip
+  // under the crop. Null when there is none. Only ever consulted while the
+  // answer is showing: a note usually restates it, so surfacing one early would
+  // give the card away.
+  note?(id: string): PlayerNote | null;
 }
 
 export interface PlayerHandlers {
@@ -42,6 +54,10 @@ export interface PlayerHandlers {
   // A grade was chosen. Queue maintenance (advancing, burying siblings) is the
   // player's job; the caller only records the review.
   onGrade?(grade: ReviewGrade, id: string): void;
+  // A note was written during play. The caller resolves the item id to a note
+  // target (a mark, its reveal group, or a box) and persists it. An empty body
+  // removes the note, matching the note editor's clear-to-remove.
+  onSaveNote?(id: string, body: string): void;
 }
 
 // Hardest first, so the row reads as a scale. Colour is applied in CSS.
@@ -74,6 +90,9 @@ export class Player {
   // fractions. Reset on every navigation; expanded by the up/down controls.
   private padUp = 0;
   private padDown = 0;
+  // True while the note strip holds a textarea. The strip is left alone by
+  // repaints during an edit so the caret is never dropped mid-sentence.
+  private editingNote = false;
   // The cropped page image without marks. Every paint starts from this so
   // hiding an occlusion truly erases it instead of drawing over the last frame.
   private baseCanvas: HTMLCanvasElement | null = null;
@@ -111,6 +130,7 @@ export class Player {
     this.items = items;
     this.index = 0;
     this.revealed = false;
+    this.editingNote = false;
     this.resetContext();
     this.baseCanvas = null;
     this.open = true;
@@ -121,6 +141,7 @@ export class Player {
 
   close(): void {
     this.open = false;
+    this.editingNote = false;
     this.baseCanvas = null;
     this.fullCanvas = null;
     this.fullPage = -1;
@@ -161,7 +182,13 @@ export class Player {
     const canvas = document.createElement("canvas");
     canvas.className = "player-canvas";
     canvas.id = "player-canvas";
-    stage.append(cue, canvas);
+    // The note strip sits under the crop, mirroring the cue above it, so the
+    // answer and the note written about it are read in one place.
+    const note = document.createElement("div");
+    note.className = "player-note";
+    note.id = "player-note";
+    note.hidden = true;
+    stage.append(cue, canvas, note);
 
     const foot = document.createElement("div");
     foot.className = "player-foot";
@@ -237,6 +264,7 @@ export class Player {
     this.items = remaining;
     this.index = nextIndex;
     this.revealed = false;
+    this.editingNote = false;
     this.resetContext();
     void this.paint();
   }
@@ -247,6 +275,7 @@ export class Player {
     this.index = next;
     // Navigating always hides the answer again, so each question starts covered.
     this.revealed = false;
+    this.editingNote = false;
     this.resetContext();
     void this.paint();
   }
@@ -295,6 +324,13 @@ export class Player {
 
   private key(e: KeyboardEvent): void {
     if (!this.open) return;
+    // Never act on a key that belongs to a text field. The note textarea stops
+    // propagation itself; this is the backstop that keeps a stray focus from
+    // revealing, navigating or grading out from under the caret.
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       this.close();
@@ -318,6 +354,10 @@ export class Player {
       const grade = (["again", "hard", "good", "easy"] as ReviewGrade[])[Number(e.key) - 1];
       e.preventDefault();
       this.grade(grade);
+    } else if ((e.key === "n" || e.key === "N") && this.revealed && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Note, like grading, is a revealed-answer action.
+      e.preventDefault();
+      this.startNoteEdit();
     }
   }
 
@@ -343,6 +383,7 @@ export class Player {
   private paintOverlayOnly(): void {
     this.syncRevealButton();
     this.syncGrades();
+    this.syncNote();
     this.drawMarks();
   }
 
@@ -378,6 +419,104 @@ export class Player {
     }
   }
 
+  // The note strip under the crop. Gated on reveal like the grade row: a note
+  // usually restates the answer, so offering it while the card is still covered
+  // would give the card away. Writes are gated with it, which also keeps the
+  // recall loop to one affordance at a time.
+  private syncNote(): void {
+    const host = this.root.querySelector<HTMLElement>("#player-note");
+    if (!host) return;
+    // An open editor owns the strip; rebuilding it here would drop the caret.
+    if (this.editingNote) return;
+
+    const item = this.current();
+    const body = item && this.revealed ? this.source.note?.(item.id)?.body.trim() ?? "" : "";
+    host.innerHTML = "";
+    host.hidden = !item || !this.revealed;
+    if (!item || host.hidden) return;
+
+    if (body) {
+      const md = document.createElement("div");
+      md.className = "player-note-body md-body";
+      md.innerHTML = renderMarkdown(body, this.source.path?.() ?? "");
+      host.appendChild(md);
+    }
+
+    // One button covers both cases; only the glyph and wording change, so the
+    // strip never claims a card has no note when it has one.
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "player-note-edit tb-btn";
+    edit.appendChild(icon(body ? "pencil" : "plus", 12));
+    const label = document.createElement("span");
+    label.textContent = body ? "note" : "add note";
+    edit.appendChild(label);
+    edit.title = body ? "edit note (n)" : "add note (n)";
+    edit.addEventListener("click", () => this.startNoteEdit());
+    host.appendChild(edit);
+  }
+
+  // Swaps the strip for a textarea in place rather than opening the floating
+  // note editor, so the answer being written about stays visible. Blur or
+  // ⌘/Ctrl+Enter commits, Escape cancels.
+  private startNoteEdit(): void {
+    const host = this.root.querySelector<HTMLElement>("#player-note");
+    const item = this.current();
+    if (!host || !item || !this.revealed || this.editingNote) return;
+
+    const initial = this.source.note?.(item.id)?.body ?? "";
+    this.editingNote = true;
+    host.hidden = false;
+    host.innerHTML = "";
+
+    const input = document.createElement("textarea");
+    input.id = "player-note-input";
+    input.className = "player-note-input md-body";
+    input.value = initial;
+    input.placeholder = "note…  **bold**, *italic*, `code`, - list, [[link]]";
+    input.spellcheck = false;
+    input.rows = 3;
+    // The player owns Space, the arrows, 1–4 and Escape at the window, so every
+    // key typed here is stopped before it can navigate, reveal or grade the card
+    // out from under the caret — a space hiding the answer would take this very
+    // strip down with it.
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.finishNoteEdit(false);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        this.finishNoteEdit(true);
+      }
+    });
+    // Clicking anything else — a nav button, the grade row — commits rather than
+    // discards, so a note is never lost by clicking away, which is the reflex
+    // action while reviewing.
+    input.addEventListener("blur", () => this.finishNoteEdit(true));
+    host.appendChild(input);
+    requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }
+
+  private finishNoteEdit(commit: boolean): void {
+    if (!this.editingNote) return;
+    const input = this.root.querySelector<HTMLTextAreaElement>("#player-note-input");
+    const item = this.current();
+    this.editingNote = false;
+    if (item) {
+      const text = (input?.value ?? "").trim();
+      // Save only on a real change, so opening and dismissing the editor is not
+      // itself a write. An empty body removes the note, matching the note editor.
+      if (commit && text !== (this.source.note?.(item.id)?.body.trim() ?? "")) {
+        this.handlers.onSaveNote?.(item.id, text);
+      }
+    }
+    this.syncNote();
+  }
+
   private async paint(): Promise<void> {
     const item = this.current();
     const canvas = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
@@ -396,6 +535,7 @@ export class Player {
     // never paint the new question's marks over the previous question's image.
     this.syncRevealButton();
     this.syncGrades();
+    this.syncNote();
     if (!item) {
       return;
     }

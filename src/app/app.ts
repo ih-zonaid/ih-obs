@@ -83,7 +83,7 @@ import { Outline, UNGROUPED_DECK } from "../ui/outline";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
 import { hideNotePreview, openNoteEditor, showNotePreview } from "../ui/notePopover";
 import { Palette } from "../ui/palette";
-import { Player, type PlayerItem } from "../ui/player";
+import { Player, type PlayerItem, type PlayerNote } from "../ui/player";
 import { SegmentDrawer, type DrawTool } from "../ui/segmentDraw";
 import { SegmentLayer } from "../ui/segmentLayer";
 import { scrollIntoContainer } from "../ui/scroll";
@@ -431,11 +431,13 @@ export class App {
         contextMarks: (id, crop) => this.contextMarksForCard(id, crop),
         preview: (id) => this.cardPreviews(id),
         siblingIds: (id) => this.siblingCardIds(id),
-        path: () => this.currentPath ?? ""
+        path: () => this.currentPath ?? "",
+        note: (id) => this.noteForPlayerItem(id)
       },
       {
         onClose: () => undefined,
-        onGrade: (grade, id) => void this.gradeCard(grade, id)
+        onGrade: (grade, id) => void this.gradeCard(grade, id),
+        onSaveNote: (id, body) => this.saveNoteForPlayerItem(id, body)
       }
     );
 
@@ -2841,6 +2843,37 @@ export class App {
     const mark = this.markById(id);
     if (mark && isCard(mark)) return [mark];
     return this.marksForBox(id);
+  }
+
+  // A play-item id is a mark id for card play and a box id for question play.
+  // Resolving it through noteAnchor gives the note written during play exactly
+  // the target the overlay's note editor would use, so a grouped mark writes to
+  // its reveal group rather than to one box of the group.
+  private playerNoteAnchor(id: string): { target: string; kind: NoteTargetKind } | null {
+    if (this.markById(id)) return this.noteAnchor("mark", id);
+    if (this.boxById(id)) return this.noteAnchor("box", id);
+    return null;
+  }
+
+  private noteForPlayerItem(id: string): PlayerNote | null {
+    const anchor = this.playerNoteAnchor(id);
+    if (!anchor) return null;
+    const body = this.notes.find((n) => n.target === anchor.target)?.body.trim();
+    return body ? { body } : null;
+  }
+
+  // An empty body removes the note, matching what clearing the body in the note
+  // editor does.
+  private saveNoteForPlayerItem(id: string, body: string): void {
+    const anchor = this.playerNoteAnchor(id);
+    if (!anchor) return;
+    const existing = this.notes.find((n) => n.target === anchor.target);
+    const text = body.trim();
+    if (!text) {
+      if (existing) void this.deleteNote(existing.id);
+      return;
+    }
+    void this.saveNote(anchor.kind, anchor.target, text, existing);
   }
 
   // Neighbouring occlusions visible in a card's crop, drawn grey behind the
