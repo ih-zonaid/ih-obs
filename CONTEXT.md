@@ -226,6 +226,12 @@ Order is document position (page, then y).
   gated exactly like the grade row. It renders the note as markdown and offers
   `add note` / `note` (or `n`), which swaps the strip for an inline textarea:
   ⌘/Ctrl+Enter or blur commits, Esc cancels, an empty body removes the note.
+  Under `@media (pointer: coarse)` the strip starts as one clamped line of plain
+  text and opens on tap (`noteExpanded` + the `expanded` class; the media query
+  decides the layout, JS only supplies the toggle). This is a reading choice,
+  not a layout repair — the crop is sized intrinsically by the page raster
+  (`.player-canvas` only downscales), so nothing squeezes it; the collapse keeps
+  the reference material from out-weighing the ~40px band it annotates.
   The item id is resolved through `playerNoteAnchor`, so a note written in play
   lands on the same target the overlay's note editor would use (a grouped mark
   writes to its reveal group) and appears in the notes panel and outline dot.

@@ -77,6 +77,11 @@ const CONTEXT_MAX = 0.5;
 // occluded but do not compete with the focused answer's own colour.
 const CONTEXT_COLOR = "#9ca3af";
 
+// Mirrors the coarse-pointer block in styles.css that collapses the note strip
+// to one line. Kept as one string on both sides: the CSS decides the layout, and
+// this only decides whether tapping a note is a no-op.
+const COARSE_POINTER = "(pointer: coarse)";
+
 export class Player {
   private readonly root: HTMLElement;
   private readonly source: PlayerSource;
@@ -93,6 +98,12 @@ export class Player {
   // True while the note strip holds a textarea. The strip is left alone by
   // repaints during an edit so the caret is never dropped mid-sentence.
   private editingNote = false;
+  // Whether the note strip has been tapped open. Only meaningful under the
+  // coarse-pointer rules, where the strip starts as a single line; on a pointer
+  // device the class it drives matches no rule and this stays inert.
+  private noteExpanded = false;
+  // Detached by finishNoteEdit; non-null only while the editor is open.
+  private noteViewportOff: (() => void) | null = null;
   // The cropped page image without marks. Every paint starts from this so
   // hiding an occlusion truly erases it instead of drawing over the last frame.
   private baseCanvas: HTMLCanvasElement | null = null;
@@ -131,6 +142,7 @@ export class Player {
     this.index = 0;
     this.revealed = false;
     this.editingNote = false;
+    this.noteExpanded = false;
     this.resetContext();
     this.baseCanvas = null;
     this.open = true;
@@ -142,6 +154,8 @@ export class Player {
   close(): void {
     this.open = false;
     this.editingNote = false;
+    this.detachNoteViewport();
+    this.noteExpanded = false;
     this.baseCanvas = null;
     this.fullCanvas = null;
     this.fullPage = -1;
@@ -265,6 +279,7 @@ export class Player {
     this.index = nextIndex;
     this.revealed = false;
     this.editingNote = false;
+    this.noteExpanded = false;
     this.resetContext();
     void this.paint();
   }
@@ -276,6 +291,7 @@ export class Player {
     // Navigating always hides the answer again, so each question starts covered.
     this.revealed = false;
     this.editingNote = false;
+    this.noteExpanded = false;
     this.resetContext();
     void this.paint();
   }
@@ -433,13 +449,24 @@ export class Player {
     const body = item && this.revealed ? this.source.note?.(item.id)?.body.trim() ?? "" : "";
     host.innerHTML = "";
     host.hidden = !item || !this.revealed;
+    host.classList.toggle("expanded", this.noteExpanded);
     if (!item || host.hidden) return;
 
     if (body) {
+      // The same note twice: rendered markdown for the expanded strip, and a
+      // flattened plain-text line for the collapsed one. A CSS ellipsis needs a
+      // single text node to work on, and markdown arrives as block elements, so
+      // the collapsed line cannot just be the rendered body clipped.
+      const preview = document.createElement("div");
+      preview.className = "player-note-preview";
+      preview.textContent = body.replace(/\s+/g, " ");
+      preview.addEventListener("click", () => this.toggleNoteExpanded());
+
       const md = document.createElement("div");
       md.className = "player-note-body md-body";
       md.innerHTML = renderMarkdown(body, this.source.path?.() ?? "");
-      host.appendChild(md);
+      md.addEventListener("click", () => this.toggleNoteExpanded());
+      host.append(preview, md);
     }
 
     // One button covers both cases; only the glyph and wording change, so the
@@ -454,6 +481,16 @@ export class Player {
     edit.title = body ? "edit note (n)" : "add note (n)";
     edit.addEventListener("click", () => this.startNoteEdit());
     host.appendChild(edit);
+  }
+
+  // On a touch screen the strip starts as one line; tapping it opens the whole
+  // note. Under a pointer device the CSS shows the body regardless, so this is
+  // guarded rather than merely inert — a click on a note should not look like it
+  // did something when nothing can change.
+  private toggleNoteExpanded(): void {
+    if (!window.matchMedia(COARSE_POINTER).matches) return;
+    this.noteExpanded = !this.noteExpanded;
+    this.syncNote();
   }
 
   // Swaps the strip for a textarea in place rather than opening the floating
@@ -495,6 +532,21 @@ export class Player {
     // action while reviewing.
     input.addEventListener("blur", () => this.finishNoteEdit(true));
     host.appendChild(input);
+    // The soft keyboard is the one thing here a viewport unit cannot see: iOS
+    // does not shrink dvh for it, only visualViewport, so the player box stays
+    // its full height while the bottom of the screen is covered — and the strip
+    // being typed into is at the bottom. Nudge it back into the visible area
+    // whenever the visual viewport changes.
+    const viewport = window.visualViewport;
+    if (viewport) {
+      const reveal = (): void => input.scrollIntoView({ block: "nearest" });
+      viewport.addEventListener("resize", reveal);
+      viewport.addEventListener("scroll", reveal);
+      this.noteViewportOff = () => {
+        viewport.removeEventListener("resize", reveal);
+        viewport.removeEventListener("scroll", reveal);
+      };
+    }
     requestAnimationFrame(() => {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
@@ -506,6 +558,10 @@ export class Player {
     const input = this.root.querySelector<HTMLTextAreaElement>("#player-note-input");
     const item = this.current();
     this.editingNote = false;
+    this.detachNoteViewport();
+    // Back to the resting state after an edit: the collapsed strip is the one
+    // that leaves the crop its room, and expanding it is one tap away.
+    this.noteExpanded = false;
     if (item) {
       const text = (input?.value ?? "").trim();
       // Save only on a real change, so opening and dismissing the editor is not
@@ -515,6 +571,14 @@ export class Player {
       }
     }
     this.syncNote();
+  }
+
+  // The visual-viewport listeners live only as long as the textarea. Closing the
+  // player tears the textarea out of the DOM without a blur reaching
+  // finishNoteEdit, so the teardown is reachable from there too.
+  private detachNoteViewport(): void {
+    this.noteViewportOff?.();
+    this.noteViewportOff = null;
   }
 
   private async paint(): Promise<void> {
@@ -673,6 +737,7 @@ export class Player {
 
   destroy(): void {
     window.removeEventListener("keydown", this.onKey);
+    this.detachNoteViewport();
     this.root.innerHTML = "";
   }
 }
