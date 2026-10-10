@@ -47,6 +47,11 @@ interface Drag {
 // How far the pointer must travel before a press becomes a drag rather than a
 // click. Without this, every click-to-reveal on a mark would nudge it.
 const DRAG_THRESHOLD_PX = 3;
+// A mouse can hold a 3px line; a finger cannot. Touch slop is routinely 5–15px,
+// so the mouse threshold would turn any scroll that happens to start on the
+// frame into a move or a resize. Reading mode never shows the frame, but a
+// touchscreen laptop or a tablet with a trackpad still can.
+const TOUCH_THRESHOLD_PX = 12;
 
 // The transform frame: a move/resize chrome drawn over the selected entity
 // only. Nothing here mutates the model directly; the app owns the span and is
@@ -60,6 +65,7 @@ export class Transform {
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onPointerCancel: () => void;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
 
   constructor(surfaces: Surface[], options: TransformOptions) {
@@ -68,6 +74,7 @@ export class Transform {
     this.onPointerDown = (e) => this.pointerDown(e);
     this.onPointerMove = (e) => this.pointerMove(e);
     this.onPointerUp = (e) => this.pointerUp(e);
+    this.onPointerCancel = () => this.pointerCancel();
     this.onKeyDown = (e) => this.keyDown(e);
     this.mount();
   }
@@ -82,6 +89,7 @@ export class Transform {
       layer.addEventListener("pointerdown", this.onPointerDown);
       layer.addEventListener("pointermove", this.onPointerMove);
       layer.addEventListener("pointerup", this.onPointerUp);
+      layer.addEventListener("pointercancel", this.onPointerCancel);
       layer.addEventListener("contextmenu", (e) => {
         if (!(e.target as HTMLElement).closest(".transform-frame")) return;
         e.preventDefault();
@@ -166,7 +174,7 @@ export class Transform {
     let dy = (e.clientY - drag.startY) / h;
     if (!drag.moved) {
       const px = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-      if (px < DRAG_THRESHOLD_PX) return;
+      if (px < (e.pointerType === "touch" ? TOUCH_THRESHOLD_PX : DRAG_THRESHOLD_PX)) return;
       drag.moved = true;
     }
     const axis = this.options.getTarget()?.axis ?? "both";
@@ -191,6 +199,18 @@ export class Transform {
     else this.options.onClick();
   }
 
+  // A touch that turns into a scroll never reaches pointerup, so the drag is
+  // abandoned and the pre-drag span restored (Escape's path). Without this,
+  // `drag` would stay set and the early return in pointerDown would make the
+  // frame permanently un-draggable — the whole app's own worst mobile bug.
+  private pointerCancel(): void {
+    const drag = this.drag;
+    if (!drag) return;
+    this.drag = null;
+    this.options.onCancel(drag.origin);
+    this.repaint();
+  }
+
   private keyDown(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
     // Don't swallow Escape from inside a text field (label/note editors).
@@ -213,6 +233,7 @@ export class Transform {
       layer.removeEventListener("pointerdown", this.onPointerDown);
       layer.removeEventListener("pointermove", this.onPointerMove);
       layer.removeEventListener("pointerup", this.onPointerUp);
+      layer.removeEventListener("pointercancel", this.onPointerCancel);
       layer.remove();
     }
     this.layers.clear();

@@ -105,6 +105,7 @@ export class Overlay {
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onPointerCancel: () => void;
   private readonly onPointerLeave: () => void;
   private readonly onWheel: (e: WheelEvent) => void;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
@@ -116,6 +117,7 @@ export class Overlay {
     this.onPointerDown = (e) => this.pointerDown(e);
     this.onPointerMove = (e) => this.pointerMove(e);
     this.onPointerUp = (e) => this.pointerUp(e);
+    this.onPointerCancel = () => this.pointerCancel();
     this.onPointerLeave = () => {
       this.lastHover = null;
       this.clearHoverGhost();
@@ -136,6 +138,7 @@ export class Overlay {
       layer.addEventListener("pointerdown", this.onPointerDown);
       layer.addEventListener("pointermove", this.onPointerMove);
       layer.addEventListener("pointerup", this.onPointerUp);
+      layer.addEventListener("pointercancel", this.onPointerCancel);
       layer.addEventListener("pointerleave", this.onPointerLeave);
       layer.addEventListener("wheel", this.onWheel, { passive: false });
       // While the line tool is armed, a right-click on the page (not on a
@@ -598,6 +601,21 @@ export class Overlay {
     this.options.onChange(this.marks);
   }
 
+  // The browser sends pointercancel instead of pointerup when it takes the
+  // gesture over — a touch that turns into a scroll, a pinch, an OS edge swipe.
+  // No mark is committed (the gesture was abandoned, not finished), but the
+  // draft must be dropped: leaving `drawing` set would strand the ghost on the
+  // page and, because pointerMove only previews while `drawing` is null, would
+  // deaden every later gesture on this layer.
+  private pointerCancel(): void {
+    const d = this.drawing;
+    if (!d) return;
+    this.drawing = null;
+    d.ghost.remove();
+    this.clearHoverGhost();
+    this.lastHover = null;
+  }
+
   // A mark with a groupId (line-tool swipes chained with Shift) reveals and
   // hides together with the rest of its group, as one logical answer.
   reveal(id: string, revealed = true): void {
@@ -829,6 +847,7 @@ export class Overlay {
       layer.removeEventListener("pointerdown", this.onPointerDown);
       layer.removeEventListener("pointermove", this.onPointerMove);
       layer.removeEventListener("pointerup", this.onPointerUp);
+      layer.removeEventListener("pointercancel", this.onPointerCancel);
       layer.removeEventListener("pointerleave", this.onPointerLeave);
       layer.removeEventListener("wheel", this.onWheel);
       layer.remove();

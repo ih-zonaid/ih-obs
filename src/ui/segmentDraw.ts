@@ -32,6 +32,7 @@ export class SegmentDrawer {
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onPointerCancel: () => void;
   private readonly onLeave: () => void;
 
   constructor(surfaces: Surface[], options: SegmentDrawerOptions) {
@@ -40,6 +41,7 @@ export class SegmentDrawer {
     this.onPointerDown = (e) => this.pointerDown(e);
     this.onPointerMove = (e) => this.pointerMove(e);
     this.onPointerUp = (e) => this.pointerUp(e);
+    this.onPointerCancel = () => this.pointerCancel();
     this.onLeave = () => this.clearHover();
     this.mount();
   }
@@ -55,6 +57,7 @@ export class SegmentDrawer {
       layer.addEventListener("pointerdown", this.onPointerDown);
       layer.addEventListener("pointermove", this.onPointerMove);
       layer.addEventListener("pointerup", this.onPointerUp);
+      layer.addEventListener("pointercancel", this.onPointerCancel);
       layer.addEventListener("pointerleave", this.onLeave);
     }
   }
@@ -229,6 +232,16 @@ export class SegmentDrawer {
       w: width / w,
       h: height / h
     });
+  }
+
+  // The browser cancels the pointer when it claims the gesture for scrolling or
+  // a pinch; pointerup never arrives, so the ghost has to be dropped here or it
+  // would stay painted on the page and `drawing` would stay set.
+  private pointerCancel(): void {
+    const d = this.drawing;
+    if (!d) return;
+    this.drawing = null;
+    d.ghost.remove();
   }
 
   destroy(): void {
