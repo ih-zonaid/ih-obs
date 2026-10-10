@@ -116,7 +116,8 @@ read inside the algorithm.
   real review runs (`previewIntervals` → `formatPreviews`).
 - **Queue** (`src/srs/queue.ts`): cards due now first (longest overdue first),
   then new; cards scheduled ahead are progress, not a queue. `countDeck`,
-  `sumCounts` and `buryGroup` (reveal-group siblings) live here too.
+  `sumCounts`, `buryGroup` (reveal-group siblings) and `shuffleWithinTiers`
+  (shuffle inside a tier, never across one) live here too.
 
 ### 3c. Decks from the outline
 
@@ -219,6 +220,13 @@ Order is document position (page, then y).
 - **Grading**: revealing a card shows four grade buttons (Again/Hard/Good/Easy)
   labelled with the interval each would schedule. Grading advances the FSRS
   schedule and buries reveal-group siblings. See §3b.
+- **Session queue** (in `Player`): a sitting is one list. A card graded onto a
+  sub-day step (an FSRS learning step) is *not* finished — it leaves the order
+  but re-enters it once its due time arrives, checked lazily on the next
+  navigation or grade, so no timer runs while the player idles. Shuffle (the
+  head button, or `r`) is off by default and session-only: it re-orders the
+  cards still ahead *within their tier* (overdue, or new) through the deck layer,
+  leaving the card on screen in place.
 - **Decks**: each outline row is a playable deck with a due/new badge; see §3c.
 - **Reveal controls**: toggle reveal, hide all, per-mark click toggle.
 - **Notes in play** (schema unchanged): a note strip under the crop, shown only

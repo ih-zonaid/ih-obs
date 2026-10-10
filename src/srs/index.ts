@@ -47,6 +47,7 @@ export {
 	buryGroup,
 	countDeck,
 	isActionable,
+	shuffleWithinTiers,
 	sumCounts,
 	workloadFrom,
 } from "./queue";

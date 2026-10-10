@@ -88,6 +88,34 @@ export function buildQueue(
 }
 
 /**
+ * Shuffles cards within each same-priority run, leaving the runs themselves in
+ * order.
+ *
+ * `buildQueue` returns overdue cards first (in due order) then the new pile, so a
+ * priority run is a contiguous block of equal tier. Shuffling inside a run
+ * randomizes *which* same-priority card comes first without ever letting a new
+ * card jump an overdue one. `random` is injected rather than read from
+ * `Math.random`, so a session can be replayed deterministically like everything
+ * else here.
+ */
+export function shuffleWithinTiers(cards: DeckCard[], random: () => number): DeckCard[] {
+	const out = [...cards];
+	let start = 0;
+	while (start < out.length) {
+		const fresh = out[start].row === null;
+		let end = start + 1;
+		while (end < out.length && (out[end].row === null) === fresh) end += 1;
+		// Fisher-Yates within [start, end).
+		for (let i = end - 1; i > start; i--) {
+			const j = start + Math.floor(random() * (i - start + 1));
+			[out[i], out[j]] = [out[j], out[i]];
+		}
+		start = end;
+	}
+	return out;
+}
+
+/**
  * The four numbers on a deck row, taken from the plugin's deck stats. `fresh`
  * is the one that is easy to leave out and shouldn't be: without it a finished
  * deck and an empty deck look identical.

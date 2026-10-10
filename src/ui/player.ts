@@ -39,6 +39,11 @@ export interface PlayerSource {
   // Marks that reveal together with this card, dropped from the sitting when it
   // is answered so one logical answer is not asked several times in a row.
   siblingIds?(id: string): string[];
+  // Session order for a set of ids, consulted when the shuffle toggle changes.
+  // Priority (a card's due date) lives in the deck layer, which the player never
+  // sees, so ordering is delegated back rather than guessed here. Omitted = keep
+  // the caller's order.
+  reorder?(ids: string[], random: boolean): string[];
   // Vault path of the open document, so a cue's [[wikilinks]] resolve relative
   // to the same place they would in a note.
   path?(): string;
@@ -104,6 +109,17 @@ export class Player {
   private noteExpanded = false;
   // Detached by finishNoteEdit; non-null only while the editor is open.
   private noteViewportOff: (() => void) | null = null;
+  // Every item the session started with, keyed by id. A relearn card leaves the
+  // working order but has to come back with its crop, cue and span intact, so its
+  // presentation payload is kept here rather than rebuilt on re-entry.
+  private byId = new Map<string, PlayerItem>();
+  // Cards graded onto a sub-day step (an FSRS learning step). They leave the
+  // order but re-enter it once their due time arrives — lazily, on the next
+  // navigation or grade, so nothing runs while the player sits idle.
+  private pending: { id: string; due: number }[] = [];
+  // Whether same-priority cards are shuffled for this sitting. Off by default and
+  // never persisted: a fresh session always starts in deck order.
+  private random = false;
   // The cropped page image without marks. Every paint starts from this so
   // hiding an occlusion truly erases it instead of drawing over the last frame.
   private baseCanvas: HTMLCanvasElement | null = null;
@@ -139,6 +155,9 @@ export class Player {
   start(items: PlayerItem[]): void {
     if (!items.length) return;
     this.items = items;
+    this.byId = new Map(items.map((item) => [item.id, item]));
+    this.pending = [];
+    this.random = false;
     this.index = 0;
     this.revealed = false;
     this.editingNote = false;
@@ -156,6 +175,8 @@ export class Player {
     this.editingNote = false;
     this.detachNoteViewport();
     this.noteExpanded = false;
+    this.pending = [];
+    this.byId.clear();
     this.baseCanvas = null;
     this.fullCanvas = null;
     this.fullPage = -1;
@@ -186,7 +207,15 @@ export class Player {
     close.title = "close (Esc)";
     close.setAttribute("aria-label", "close");
     close.addEventListener("click", () => this.close());
-    head.append(title, close);
+
+    // Session-only shuffle. Sits in the head beside close rather than in the foot,
+    // which is already full on a phone; a stray tap here cannot cost an answer.
+    const shuffle = document.createElement("button");
+    shuffle.className = "tb-btn player-shuffle";
+    shuffle.id = "player-shuffle";
+    shuffle.appendChild(icon("shuffle", 15));
+    shuffle.addEventListener("click", () => this.toggleRandom());
+    head.append(title, shuffle, close);
 
     const stage = document.createElement("div");
     stage.className = "player-stage";
@@ -257,6 +286,7 @@ export class Player {
 
     box.append(head, stage, foot, grades);
     this.root.append(backdrop, box);
+    this.syncShuffleButton();
   }
 
   private grade(g: ReviewGrade): void {
@@ -268,15 +298,18 @@ export class Player {
     // answer, so asking the rest in the same sitting is asking it again.
     const gone = new Set<string>([item.id, ...(this.source.siblingIds?.(item.id) ?? [])]);
     const remaining = this.items.filter((card) => !gone.has(card.id));
+    // A relearn card whose step has elapsed takes the answered card's place, so
+    // it is seen next instead of the sitting moving on without it.
+    const at = Math.min(this.index, remaining.length);
+    this.items = remaining;
+    this.promote(at);
 
-    if (remaining.length === 0) {
+    if (this.items.length === 0) {
       this.close();
       return;
     }
     // The answered card is gone, so whatever now sits at its index is next.
-    const nextIndex = Math.min(this.index, remaining.length - 1);
-    this.items = remaining;
-    this.index = nextIndex;
+    this.index = Math.min(this.index, this.items.length - 1);
     this.revealed = false;
     this.editingNote = false;
     this.noteExpanded = false;
@@ -285,6 +318,9 @@ export class Player {
   }
 
   private step(delta: number): void {
+    // Bring in any relearn card whose step has elapsed, just after the current
+    // one, so a forward step lands on it; a backward step simply leaves it behind.
+    this.promote(this.index + 1);
     const next = this.index + delta;
     if (next < 0 || next >= this.items.length) return;
     this.index = next;
@@ -294,6 +330,67 @@ export class Player {
     this.noteExpanded = false;
     this.resetContext();
     void this.paint();
+  }
+
+  // Flips shuffle for the sitting. Only the cards still ahead are re-ordered; the
+  // one on screen stays put, so toggling never moves the card from under the user.
+  private toggleRandom(): void {
+    this.random = !this.random;
+    this.reorderAhead();
+    this.syncShuffleButton();
+    void this.paint();
+  }
+
+  private reorderAhead(): void {
+    const reorder = this.source.reorder;
+    if (!reorder) return;
+    const ahead = this.items.slice(this.index + 1);
+    if (ahead.length < 2) return;
+    const order = reorder(ahead.map((item) => item.id), this.random);
+    const rebuilt = order
+      .map((id) => this.byId.get(id))
+      .filter((item): item is PlayerItem => !!item);
+    // Ordering is the deck layer's call; if it changed the set unexpectedly, keep
+    // the current order rather than risk dropping a card.
+    if (rebuilt.length !== ahead.length) return;
+    this.items = [...this.items.slice(0, this.index + 1), ...rebuilt];
+  }
+
+  private syncShuffleButton(): void {
+    const button = this.root.querySelector<HTMLElement>("#player-shuffle");
+    if (!button) return;
+    button.classList.toggle("on", this.random);
+    button.title = this.random ? "shuffle: on (r)" : "shuffle: off (r)";
+    button.setAttribute("aria-label", this.random ? "shuffle on" : "shuffle off");
+    button.setAttribute("aria-pressed", String(this.random));
+  }
+
+  /**
+   * Hands a graded card back for the sitting. The caller calls this once the
+   * schedule is written: a card left on a sub-day step (an FSRS learning step) is
+   * not finished, so it is held until its due time and then shown again. Longer
+   * intervals are progress and stay out until a later session finds them due.
+   */
+  enqueueRelearn(id: string, due: number): void {
+    if (!this.open || !this.byId.has(id)) return;
+    if (this.items.some((item) => item.id === id)) return;
+    if (this.pending.some((entry) => entry.id === id)) return;
+    this.pending.push({ id, due });
+  }
+
+  // Moves relearn cards whose step has elapsed back into the order at `at`.
+  private promote(at: number): void {
+    if (!this.pending.length) return;
+    const now = Date.now();
+    const ready = this.pending.filter((entry) => entry.due <= now);
+    if (!ready.length) return;
+    this.pending = this.pending.filter((entry) => entry.due > now);
+    ready.sort((a, b) => a.due - b.due);
+    const cards = ready
+      .map((entry) => this.byId.get(entry.id))
+      .filter((item): item is PlayerItem => !!item);
+    if (!cards.length) return;
+    this.items.splice(Math.min(at, this.items.length), 0, ...cards);
   }
 
   private resetContext(): void {
@@ -374,6 +471,10 @@ export class Player {
       // Note, like grading, is a revealed-answer action.
       e.preventDefault();
       this.startNoteEdit();
+    } else if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Shuffle is a session setting, so it works whether or not the answer shows.
+      e.preventDefault();
+      this.toggleRandom();
     }
   }
 

@@ -92,6 +92,9 @@ const ICONS = {
   },
 
   // Row / item actions
+  shuffle: {
+    body: '<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="m4 4 5 5"/>'
+  },
   play: { body: '<path d="M7 5v14l12-7z"/>', filled: true },
   trash: { body: '<path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>' },
   pencil: { body: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>' },

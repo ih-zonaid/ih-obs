@@ -878,8 +878,11 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
-.player-title { font-size: 12px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-title { flex: 1; min-width: 0; font-size: 12px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-close { padding: 2px 9px; font-size: 15px; line-height: 1; }
+.player-shuffle { padding: 2px 8px; color: var(--fg-dim); }
+.player-shuffle:hover { color: var(--fg); }
+.player-shuffle.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
 .player-stage {
   flex: 1;
   min-height: 0;

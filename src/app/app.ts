@@ -94,8 +94,10 @@ import { ZoomController } from "../ui/zoom";
 import {
   buildQueue,
   countDeck,
+  DAY_MS,
   formatPreviews,
   previewIntervals,
+  shuffleWithinTiers,
   workloadFrom,
   type DeckCounts,
   type ReviewGrade,
@@ -431,6 +433,7 @@ export class App {
         contextMarks: (id, crop) => this.contextMarksForCard(id, crop),
         preview: (id) => this.cardPreviews(id),
         siblingIds: (id) => this.siblingCardIds(id),
+        reorder: (ids, random) => this.reorderCards(ids, random),
         path: () => this.currentPath ?? "",
         note: (id) => this.noteForPlayerItem(id)
       },
@@ -1803,6 +1806,24 @@ export class App {
   }
 
   /**
+   * Session order for a set of card ids, so the player's shuffle toggle can be
+   * answered without the player knowing anything about due dates. "Same priority"
+   * means the same tier — every overdue card, or every new one — and only cards
+   * within a tier are shuffled, so a new card never overtakes an overdue one.
+   */
+  private reorderCards(ids: string[], random: boolean): string[] {
+    if (!this.reviewStore || !this.currentPath) return ids;
+    const rows = this.reviewStore.rows(this.currentPath);
+    const deck = buildQueue(ids, rows, Date.now());
+    // buildQueue drops cards that are not ready, and a session only ever holds
+    // ready ones; a short result means something unexpected, so keep the caller's
+    // order rather than risk losing a card.
+    if (deck.length !== ids.length) return ids;
+    const ordered = random ? shuffleWithinTiers(deck, Math.random) : deck;
+    return ordered.map((card) => card.markId);
+  }
+
+  /**
    * The workload histogram a grading session balances against: every row the
    * document has, not just the cards on screen, so long intervals spread across
    * the whole document rather than piling onto the day after this session.
@@ -1843,12 +1864,18 @@ export class App {
   private async gradeCard(grade: ReviewGrade, id: string): Promise<void> {
     if (!this.reviewStore || !this.currentPath) return;
     if (!this.markById(id)) return;
-    await this.reviewStore.grade({
+    const now = Date.now();
+    const row = await this.reviewStore.grade({
       docPath: this.currentPath,
       markId: id,
       grade,
-      workload: this.sessionWorkload()
+      workload: this.sessionWorkload(),
+      now
     });
+    // A sub-day step is a learning step, not a finished card: hand it back so the
+    // sitting can show it again once its due time arrives (see Player.promote).
+    // Anything longer is progress and stays out until a later session finds it due.
+    if (row.due - now < DAY_MS) this.player.enqueueRelearn(id, row.due);
     // Counts (and the grade previews for the rest of the session) shifted.
     this.refreshOutline();
   }
