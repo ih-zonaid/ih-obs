@@ -15,7 +15,7 @@ import {
   setCurrentVaultId,
   type VaultRecord
 } from "../host/idb";
-import { Overlay, type OverlayMode } from "../overlay/overlay";
+import { Overlay, type NotePin, type OverlayMode } from "../overlay/overlay";
 import { ReviewStore } from "../store/review";
 import { SidecarStore } from "../store/sidecar";
 import {
@@ -56,6 +56,7 @@ import {
   markKind,
   newMarkId,
   newBoxId,
+  newNoteId,
   MARK_PALETTE,
   PAGE_OWNER,
   parseLabel,
@@ -67,6 +68,7 @@ import {
   type Entity,
   type Mark,
   type Note,
+  type NoteAnchor,
   type NoteTargetKind,
   type OutlineNode,
   type MarkKind,
@@ -323,7 +325,8 @@ export class App {
   }
 
   // Right-clicking the page itself (marks/boxes stopPropagation) offers a
-  // selection menu when text is selected, otherwise a page-scoped note.
+  // selection menu when text is selected, otherwise a note pinned to the spot
+  // that was clicked, plus the page-scoped note the whole page carries.
   // Suppressed while a mark or box tool owns the pointer.
   private viewerContext(e: MouseEvent): void {
     if (!this.view || this.view.kind === "json") return;
@@ -337,14 +340,39 @@ export class App {
       return;
     }
     e.preventDefault();
-    openContextMenu(
-      {
-        title: "Page",
-        items: [...this.noteMenuItems("page", PAGE_OWNER, e.clientX, e.clientY)]
-      },
-      e.clientX,
-      e.clientY
-    );
+    // No surface under the pointer (the margin around a page) means there is no
+    // point to pin to, so only the page note is offered.
+    const at = this.pointAt(e.clientX, e.clientY);
+    const items: ContextMenuEntry[] = [];
+    if (at) {
+      items.push(
+        {
+          label: "Pin note here…",
+          hint: "note at this spot",
+          onSelect: () => this.openPointNote(at, e.clientX, e.clientY)
+        },
+        "separator"
+      );
+    }
+    items.push(...this.noteMenuItems("page", PAGE_OWNER, e.clientX, e.clientY, "whole page"));
+    openContextMenu({ title: "Page", items }, e.clientX, e.clientY);
+  }
+
+  // The surface and normalized point under a viewport position, or null when the
+  // press landed outside every surface (e.g. the margin beside a page). This is
+  // what a pin's stored (page, x, y) means.
+  private pointAt(clientX: number, clientY: number): NoteAnchor | null {
+    for (const s of this.view?.surfaces ?? []) {
+      const rect = s.el.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right) continue;
+      if (clientY < rect.top || clientY > rect.bottom) continue;
+      return {
+        page: s.index,
+        x: (clientX - rect.left) / Math.max(1, rect.width),
+        y: (clientY - rect.top) / Math.max(1, rect.height)
+      };
+    }
+    return null;
   }
 
   private async boot(): Promise<void> {
@@ -1223,6 +1251,10 @@ export class App {
     const marks = model.entities.filter(isMark);
     const boxes = model.entities.filter(isBox);
     assignOwners(marks, boxes);
+    // Both fields land before the overlay exists: it paints at construction, and
+    // its pins are read back out of `notes` (notePins) rather than handed in.
+    this.entities = model.entities;
+    this.notes = model.notes;
     const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
@@ -1235,7 +1267,13 @@ export class App {
       onNoteHover: (id, x, y) => this.hoverMarkAttachment(id, x, y),
       onNoteLeave: () => this.leaveNote(),
       onCueHover: (id, x, y) => this.hoverCue(id, x, y),
-      onCueLeave: () => this.leaveNote()
+      onCueLeave: () => this.leaveNote(),
+      pins: () => this.notePins(),
+      onPinOpen: (id, x, y) => this.openNoteTarget("point", id, x, y),
+      onPinHover: (id, x, y) => this.hoverNote("point", id, x, y),
+      onPinLeave: () => this.leaveNote(),
+      onPinContext: (id, x, y) => this.openPinMenu(id, x, y),
+      onPinMove: (id, at) => void this.movePin(id, at)
     });
     overlay.setMode(this.mode);
     overlay.setInspect(this.inspect);
@@ -1243,8 +1281,6 @@ export class App {
     overlay.setLineColors({ occlusion: this.lineOcclusionColor, highlight: this.lineHighlightColor });
     this.overlay = overlay;
 
-    this.entities = model.entities;
-    this.notes = model.notes;
     this.activeId = null;
     this.activeKind = "box";
     this.drawTool = null;
@@ -2225,6 +2261,8 @@ export class App {
 
   // A mark that belongs to a reveal group carries one note for the whole
   // group, so a multi-line swipe is annotated once rather than per box.
+  // A point note is self-anchored (its target is its own id), so it passes
+  // through untouched — there is nothing to resolve it against.
   private noteAnchor(targetKind: NoteTargetKind, id: string): { target: string; kind: NoteTargetKind } {
     if (targetKind === "mark") {
       const mark = this.markById(id);
@@ -2256,6 +2294,7 @@ export class App {
       return m?.spans[0]?.page;
     }
     if (kind === "box") return this.boxById(target)?.spans[0]?.page;
+    if (kind === "point") return this.notes.find((n) => n.id === target)?.page;
     if (kind === "page") {
       const n = Number(target.split(":")[1]);
       return Number.isFinite(n) ? n : 0;
@@ -2272,6 +2311,7 @@ export class App {
     }
     if (kind === "group") return "Mark group";
     if (kind === "page") return "Page";
+    if (kind === "point") return "Pin";
     const box = this.boxById(target);
     if (!box) return "Box";
     if (isAnchor(box)) return box.label.replace(/^#+\s*/, "").trim() || "Anchor";
@@ -2280,21 +2320,74 @@ export class App {
 
   // Opens the editor for an anchor, creating the note on first save. Existing
   // notes open prefilled; an editor on a blank note deletes it when cleared.
-  private openNoteTarget(kind: NoteTargetKind, id: string, x: number, y: number): void {
+  // `at` is the point for a pin being created — an existing pin already carries
+  // its own, and opening one leaves it where it is.
+  private openNoteTarget(
+    kind: NoteTargetKind,
+    id: string,
+    x: number,
+    y: number,
+    at?: NoteAnchor
+  ): void {
     this.cancelNoteHover();
     const anchor = this.noteAnchor(kind, id);
     const existing = this.notes.find((n) => n.target === anchor.target);
     const label = this.noteLabel(anchor.kind, anchor.target);
-    const page = this.notePage(anchor.kind, anchor.target);
+    const page = at?.page ?? this.notePage(anchor.kind, anchor.target);
     openNoteEditor({
       title: `Note · ${label}${page !== undefined ? ` · p${page + 1}` : ""}`,
       quote: existing?.quote,
       initial: existing?.body ?? "",
       path: this.currentPath ?? "",
       anchor: { x, y },
-      onSave: (body) => void this.saveNote(anchor.kind, anchor.target, body, existing),
+      onSave: (body) => void this.saveNote(anchor.kind, anchor.target, body, existing, undefined, at),
       onDelete: existing ? () => void this.deleteNote(existing.id) : undefined
     });
+  }
+
+  // A pin: a note with nothing under it, so it carries its own point. The id is
+  // minted up front because a point note is self-anchored — its target is its
+  // own id — which keeps the editor's save and delete paths identical to every
+  // other note's.
+  private openPointNote(at: NoteAnchor, x: number, y: number): void {
+    this.openNoteTarget("point", newNoteId(), x, y, at);
+  }
+
+  // Pins to draw, in the shape the overlay wants. A point note with no point is
+  // not drawable, so it is simply left off the page (it still lists in the panel).
+  private notePins(): NotePin[] {
+    const pins: NotePin[] = [];
+    for (const n of this.notes) {
+      if (n.targetKind === "point" && n.at) pins.push({ id: n.id, at: n.at });
+    }
+    return pins;
+  }
+
+  private openPinMenu(id: string, x: number, y: number): void {
+    const note = this.notes.find((n) => n.id === id && n.targetKind === "point");
+    if (!note) return;
+    const items: ContextMenuEntry[] = [
+      {
+        label: "Edit note…",
+        hint: "markdown",
+        onSelect: () => this.openNoteTarget("point", id, x, y)
+      },
+      "separator",
+      { label: "Delete note", danger: true, onSelect: () => void this.deleteNote(id) }
+    ];
+    openContextMenu({ title: `Pin · p${(note.page ?? 0) + 1}`, items }, x, y);
+  }
+
+  // A pin drag lands on drop, as one move. The note keeps its id, so the panel
+  // row and any open editor stay pointed at the same note.
+  private async movePin(id: string, at: NoteAnchor): Promise<void> {
+    const note = this.notes.find((n) => n.id === id && n.targetKind === "point");
+    if (!note) return;
+    note.at = at;
+    note.page = at.page;
+    note.updatedAt = Date.now();
+    this.overlay?.repaint();
+    await this.persistNotes();
   }
 
   // The corner dot is shared by notes and cues. Clicking it opens whichever the
@@ -2463,22 +2556,27 @@ export class App {
     target: string,
     body: string,
     existing: Note | undefined,
-    quote?: string
+    quote?: string,
+    at?: NoteAnchor
   ): Promise<void> {
     const now = Date.now();
+    const page = at?.page ?? this.notePage(kind, target);
     if (existing) {
       existing.body = body;
       existing.updatedAt = now;
-      existing.page ??= this.notePage(kind, target);
+      existing.page ??= page;
+      if (at) existing.at = at;
       if (!existing.quote && quote) existing.quote = quote;
     } else {
       this.notes.push({
-        id: `n_${Math.random().toString(36).slice(2, 9)}`,
+        // A point note is anchored to itself, so its target is its own id.
+        id: at ? target : newNoteId(),
         target,
         targetKind: kind,
         body,
+        at,
         quote: quote?.trim() ? quote.trim() : undefined,
-        page: this.notePage(kind, target),
+        page,
         createdAt: now,
         updatedAt: now
       });
@@ -2509,13 +2607,10 @@ export class App {
     if (note.targetKind === "page") {
       this.view?.goToPage?.((note.page ?? 0) + 1);
       return;
-    }    // mark / group: scroll the surface the mark sits on to the viewer center.
-    const marks = this.marks();
-    const m =
-      note.targetKind === "mark"
-        ? marks.find((x) => x.id === note.target)
-        : marks.find((x) => x.groupId === note.target);
-    const page = m?.spans[0]?.page;
+    }
+    // point / mark / group: scroll the surface the note sits on to the viewer
+    // center, which is where its pin or mark is.
+    const page = note.targetKind === "point" ? note.at?.page : this.notePage(note.targetKind, note.target);
     if (page === undefined) return;
     const surface = this.view?.surfaces.find((s) => s.index === page);
     if (surface) scrollIntoContainer(this.shell.viewer, surface.el, "center");
@@ -2542,13 +2637,21 @@ export class App {
     await this.store.saveNotes(this.currentPath, this.view.kind, this.notes);
   }
 
-  private noteMenuItems(kind: NoteTargetKind, id: string, x: number, y: number): ContextMenuEntry[] {
+  // The hint names the kind of note on offer, so the page menu can tell a
+  // page-wide note apart from a pin at the spot that was clicked.
+  private noteMenuItems(
+    kind: NoteTargetKind,
+    id: string,
+    x: number,
+    y: number,
+    hint = "markdown"
+  ): ContextMenuEntry[] {
     const anchor = this.noteAnchor(kind, id);
     const has = this.notes.some((n) => n.target === anchor.target);
     return [
       {
         label: has ? "Edit note…" : "Add note…",
-        hint: "markdown",
+        hint,
         onSelect: () => this.openNoteTarget(kind, id, x, y)
       }
     ];

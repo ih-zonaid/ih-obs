@@ -31,6 +31,9 @@ Document page (Surface)
  ├─ Mark           (occlusion | highlight)     ← the cloze "answer"
  └─ Note           (markdown)                  ← attaches to ANY entity, or the page
         linked by `owner` + geometric containment; stored in one .ihobs sidecar
+
+A Note may instead be pinned to a bare point on a page (no entity under it),
+in which case it carries that point itself and is anchored to its own id.
 ```
 
 Every annotation is stored in **normalized page coordinates (0–1)** relative to a
@@ -65,9 +68,15 @@ Two generic primitives; all feature meaning lives in `tags`:
   - `card?`: presence makes the mark a flashcard (see §3a).
 - **`Entity`** = `Box | Mark`, held in one `entities[]` array. Features filter by
   `kind` (`isBox`, `isMark`) and by `tags` (`isAnchor`, `isFrame`, `isCard`).
-- **`Note`** — `{ target, targetKind, body, quote?, page?, createdAt, updatedAt }`.
-  - `targetKind`: `"box" | "mark" | "group" | "page"`.
+- **`Note`** — `{ target, targetKind, body, at?, quote?, page?, createdAt,
+  updatedAt }`.
+  - `targetKind`: `"box" | "mark" | "group" | "page" | "point"`.
   - Anchored by id, so it survives when the target's geometry changes.
+  - `at?: { page, x, y }` is set only on `"point"` notes (a pin): the note hangs
+    off no entity, so it carries its own page-normalized location, and its
+    `target` is its own id. That keeps the single `target` lookup key and the
+    deletion cascade working for pins exactly as for every other note, and means
+    nothing can orphan one.
   - A note with no body is never persisted (treated as noise).
 - **`SegmentRule`** — parameters for auto-segmentation (mode, anchor pattern,
   margin/gap/min-height fractions). Defaults in `DEFAULT_RULES`.
@@ -204,6 +213,15 @@ Order is document position (page, then y).
   (`src/notes/render.ts`). Output is lightly sanitized (`safe()`).
 - Notes panel in the right rail with filter, focus, edit, delete
   (`src/ui/notesPanel.ts`).
+- **Pinned notes** (schema v6, `"point"` kind): right-click any empty spot on a
+  page → **Pin note here…** drops a note at that point, with nothing underneath
+  it. The pin marker is painted by the overlay (`paintPins`, from the `pins`
+  getter — the overlay never owns note state), centred on its point: click opens
+  the note, hover previews it, right-click offers edit/delete, and dragging it
+  moves the note (committed once, on drop, through `onPinMove`; a press under a
+  4px slop is still a click). The page menu keeps its page-wide note too, so the
+  two hints name the difference ("note at this spot" vs "whole page"). Pins show
+  in the notes panel with a pin icon and focus scrolls their page into view.
 
 ### Recall
 - **Play mode** (`src/ui/player.ts`): one question at a time. Crops the
@@ -290,7 +308,8 @@ Order is document position (page, then y).
 src/app/          app.ts (main orchestration, ~1660 lines), main.ts (mount)
 src/adapters/     types.ts (DocView/Surface/Adapter iface), index.ts (pickAdapter),
                   pdf.ts, image.ts, markdown.ts, json.ts
-src/overlay/      overlay.ts (marks: draw, paint, reveal, owner menus)
+src/overlay/      overlay.ts (marks: draw, paint, reveal, owner menus;
+                  note pins: paint, open, drag)
 src/segment/      detect.ts (layout-based detection), layout.ts (bitmap/band/otsu)
 src/selection/    textSelection.ts (DOM selection → normalized hulls)
 src/store/        schema.ts (types, outline tree, ownership, migration),
@@ -385,7 +404,11 @@ a served build (`npx vite preview`), never the dev server.
 - **v6 (current):** two generic entities (`Box`, `Mark`) in one `entities[]`
   array; feature meaning in `tags`; anchor = a `Box` tagged `"anchor"`; optional
   `card` property on a mark for flashcards. See `docs/schema-v6.md` for the full
-  design and `docs/schema-v6-plan.md` for how it was implemented.
+  design and `docs/schema-v6-plan.md` for how it was implemented. Pinned notes
+  (`Note.at`, `targetKind: "point"`) landed inside v6 rather than as v7: the
+  field is optional and additive, so only a build *older* than pins would lose
+  them — and that build treats an unknown version as an empty sidecar, i.e. it
+  would drop the marks and boxes too. Additive optional fields beat a bump.
 - **v5 and earlier:** three primitives (`Segment`, `Marker`, `Region`), migrated
   automatically by `migrate()`.
 
@@ -394,6 +417,10 @@ a served build (`npx vite preview`), never the dev server.
 - Auto-segment and play mode currently **PDF-only** (`getPageImages`).
 - Outline only makes sense for paged surfaces (pdf/image); notes work for all
   kinds; JSON is read-only.
+- A pin is placed from the page's right-click menu, so on a touch device (which
+  has no right-click) there is no way to create one yet — a toolbar pin tool is
+  the obvious next step. Pins still *render* everywhere the overlay exists (pdf,
+  image and markdown surfaces).
 - Auto-segment rules are tuned for numbered MCQ-style layouts (`DEFAULT_RULES`);
   splitting manually is the fallback.
 - No OCR in-house — relies on the PDF already having a text layer for

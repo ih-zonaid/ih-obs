@@ -83,6 +83,9 @@ The schema knows none of these. Each feature reads tags:
 | Notes | any entity id | nothing (already generic) |
 | **Flashcards** | `Mark.card` + `Box` | context + frame resolution |
 
+A `Note` of kind `"point"` reads nothing: it is a pin, so it carries its own
+`at: { page, x, y }` and is anchored to its own id.
+
 **One tag registry** (`TAGS`, `isFrame(box)`, `isAnchor(box)`,
 `isOcclusion(mark)`, …). Raw string comparisons live only there.
 
@@ -169,7 +172,7 @@ Because a frame is a crop mask, it is **never an owner**: `smallestContainingBox
 | `Segment { role, label, spans }` | `Box { kind:"box", tags:[role], label, spans }` |
 | `Marker { page, y, label }` | `Box { kind:"box", tags:["anchor"], spans:[{page, x:0, y, w:1, h:anchorThickness}], label }` |
 | `Region { kind, surface, x, y, w, h, owner, groupId?, revealed?, color }` | `Mark { kind:"mark", tags:[kind], spans:[{page: surface, x, y, w, h}], owner, groupId?, revealed?, color }` |
-| `Note { target, targetKind }` | unchanged; `targetKind` vocabulary shrinks to `box \| mark \| group \| page` |
+| `Note { target, targetKind }` | unchanged, besides an optional `at` for `"point"` pins; `targetKind` vocabulary shrinks to `box \| mark \| group \| page`, plus `point` |
 
 ## 7. What this removes
 

@@ -23,7 +23,8 @@ const KIND_ICON: Record<NoteTargetKind, IconName> = {
   mark: "square-filled",
   box: "square",
   group: "layers",
-  page: "file-text"
+  page: "file-text",
+  point: "pin"
 };
 
 // The right-rail Notes panel: one row per note, newest first, with a filter and
@@ -64,7 +65,7 @@ export class NotesPanel {
       hint.className = "notes-hint";
       hint.textContent = this.rows.length
         ? "No notes match your filter."
-        : "No notes yet. Right-click a mark, box, or the page to add one.";
+        : "No notes yet. Right-click a mark, a box, or any spot on a page to pin one.";
       this.root.appendChild(hint);
       this.root.scrollTop = scroll;
       return;

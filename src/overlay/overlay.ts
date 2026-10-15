@@ -11,12 +11,20 @@ import {
   type InkPoint,
   type Mark,
   type MarkKind,
+  type NoteAnchor,
   type Span
 } from "../store/schema";
 import type { Surface } from "../adapters/types";
 import { icon } from "../ui/icons";
 
 export type OverlayMode = "none" | "occlude" | "highlight" | "line" | "ink";
+
+// A note pinned to a point on a page. The overlay only needs the id and where
+// it sits, so notes stay owned by the app (and its Notes panel).
+export interface NotePin {
+  id: string;
+  at: NoteAnchor;
+}
 
 export interface OverlayOptions {
   onChange(marks: Mark[]): void;
@@ -45,6 +53,16 @@ export interface OverlayOptions {
   // note dot; the corner dot's own hover wins when the pointer is over it.
   onCueHover?(id: string, x: number, y: number): void;
   onCueLeave?(): void;
+  // Point-anchored notes, drawn as pins. Read through a getter rather than
+  // handed in like marks because the overlay never edits them: they are the
+  // app's notes, and a pin drag is reported back as one committed move.
+  pins?(): NotePin[];
+  onPinOpen?(id: string, x: number, y: number): void;
+  onPinHover?(id: string, x: number, y: number): void;
+  onPinLeave?(): void;
+  onPinContext?(id: string, x: number, y: number): void;
+  // Fired once, on drop, with the pin's new point.
+  onPinMove?(id: string, at: NoteAnchor): void;
 }
 
 export class Overlay {
@@ -109,6 +127,29 @@ export class Overlay {
   private readonly onPointerLeave: () => void;
   private readonly onWheel: (e: WheelEvent) => void;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
+  private readonly onPinDragMove: (e: PointerEvent) => void;
+  private readonly onPinDragUp: () => void;
+  // A pin being dragged. A pin is dropped by right-click, so dragging is how a
+  // mis-dropped one is nudged onto the exact spot; the new point is committed
+  // once, on drop, rather than on every move.
+  private pinDrag: {
+    id: string;
+    at: NoteAnchor;
+    layer: HTMLElement;
+    el: HTMLElement;
+    // Pointer position in layer pixels when the drag started, and the pin's own
+    // position then, so the pin tracks the pointer by delta and never jumps.
+    startX: number;
+    startY: number;
+    anchorX: number;
+    anchorY: number;
+    moved: boolean;
+    live: { x: number; y: number } | null;
+  } | null = null;
+  // Set when a drag ends, so the click that follows a drop does not also open
+  // the note. Cleared by the next press on a pin.
+  private pinDragged = false;
+  private static readonly PIN_SLOP = 4;
 
   constructor(surfaces: Surface[], marks: Mark[], options: OverlayOptions) {
     this.surfaces = surfaces;
@@ -124,6 +165,8 @@ export class Overlay {
     };
     this.onWheel = () => this.wheel();
     this.onKeyDown = (e) => this.keyDown(e);
+    this.onPinDragMove = (e) => this.pinDragMove(e);
+    this.onPinDragUp = () => this.pinDragUp();
     window.addEventListener("keydown", this.onKeyDown);
     this.mount();
   }
@@ -703,6 +746,7 @@ export class Overlay {
     for (const layer of this.layers.values()) {
       // The pending line draft is a region too; it is not a mark, so leave it.
       layer.querySelectorAll(".ihobs-region:not(.ghost):not(.pending-line)").forEach((n) => n.remove());
+      layer.querySelectorAll(".ihobs-note-pin").forEach((n) => n.remove());
       // Live ink is re-drawn too, so remove committed stroke paths as well.
       layer.querySelectorAll(".ihobs-ink-layer > path:not(.ihobs-ink-live)").forEach((n) => n.remove());
     }
@@ -788,6 +832,103 @@ export class Overlay {
       });
       layer.appendChild(el);
     }
+    this.paintPins();
+  }
+
+  // Pinned notes, last so they sit above the marks they annotate. A pin is
+  // chrome for a spot on the page, which is why it is drawn from its own getter
+  // instead of being pushed into the mark list.
+  private paintPins(): void {
+    for (const pin of this.options.pins?.() ?? []) {
+      const layer = this.layerOf(pin.at.page);
+      if (!layer) continue;
+      const { w, h } = this.surfaceSize(pin.at.page);
+      const el = document.createElement("div");
+      el.className = "ihobs-note-pin";
+      el.dataset.id = pin.id;
+      el.title = "pinned note — click to open · drag to move";
+      el.appendChild(icon("pin", 11));
+      el.style.left = `${pin.at.x * w}px`;
+      el.style.top = `${pin.at.y * h}px`;
+      el.addEventListener("pointerdown", (e) => this.pinPointerDown(e, pin, el, layer));
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // A drop is a move, not an open; consume the click it leaves behind.
+        if (this.pinDragged) {
+          this.pinDragged = false;
+          return;
+        }
+        this.options.onPinOpen?.(pin.id, e.clientX, e.clientY);
+      });
+      el.addEventListener("pointerenter", (e) =>
+        this.options.onPinHover?.(pin.id, e.clientX, e.clientY)
+      );
+      el.addEventListener("pointerleave", () => this.options.onPinLeave?.());
+      el.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.options.onPinContext?.(pin.id, e.clientX, e.clientY);
+      });
+      layer.appendChild(el);
+    }
+  }
+
+  // Pressing a pin starts a drag on a 4px slop, so a plain click still opens the
+  // note. Listeners go on the window because the pointer routinely leaves the
+  // pin — and the page — mid-drag.
+  private pinPointerDown(e: PointerEvent, pin: NotePin, el: HTMLElement, layer: HTMLElement): void {
+    if (e.button !== 0) return;
+    // The pin owns this press, not the mark tools underneath it.
+    e.stopPropagation();
+    this.pinDragged = false;
+    const { w, h } = this.surfaceSize(pin.at.page);
+    const { x, y } = this.localPoint(layer, e.clientX, e.clientY);
+    this.pinDrag = {
+      id: pin.id,
+      at: pin.at,
+      layer,
+      el,
+      startX: x,
+      startY: y,
+      anchorX: pin.at.x * w,
+      anchorY: pin.at.y * h,
+      moved: false,
+      live: null
+    };
+    window.addEventListener("pointermove", this.onPinDragMove);
+    window.addEventListener("pointerup", this.onPinDragUp);
+    window.addEventListener("pointercancel", this.onPinDragUp);
+  }
+
+  private pinDragMove(e: PointerEvent): void {
+    const d = this.pinDrag;
+    if (!d) return;
+    const { x, y } = this.localPoint(d.layer, e.clientX, e.clientY);
+    if (!d.moved) {
+      if (Math.abs(x - d.startX) + Math.abs(y - d.startY) < Overlay.PIN_SLOP) return;
+      d.moved = true;
+    }
+    const { w, h } = this.surfaceSize(d.at.page);
+    const px = Math.min(w, Math.max(0, d.anchorX + (x - d.startX)));
+    const py = Math.min(h, Math.max(0, d.anchorY + (y - d.startY)));
+    d.el.style.left = `${px}px`;
+    d.el.style.top = `${py}px`;
+    d.live = { x: px / w, y: py / h };
+  }
+
+  private pinDragUp(): void {
+    const d = this.pinDrag;
+    this.clearPinDrag();
+    if (!d || !d.moved || !d.live) return;
+    this.pinDragged = true;
+    this.options.onPinMove?.(d.id, { page: d.at.page, x: d.live.x, y: d.live.y });
+  }
+
+  private clearPinDrag(): void {
+    this.pinDrag = null;
+    window.removeEventListener("pointermove", this.onPinDragMove);
+    window.removeEventListener("pointerup", this.onPinDragUp);
+    window.removeEventListener("pointercancel", this.onPinDragUp);
   }
 
   // Committed ink is one SVG path per stroke, drawn above the mark divs. A wide
@@ -843,6 +984,8 @@ export class Overlay {
 
   destroy(): void {
     window.removeEventListener("keydown", this.onKeyDown);
+    // A drag in flight holds window listeners; drop them without committing.
+    this.clearPinDrag();
     for (const layer of this.layers.values()) {
       layer.removeEventListener("pointerdown", this.onPointerDown);
       layer.removeEventListener("pointermove", this.onPointerMove);

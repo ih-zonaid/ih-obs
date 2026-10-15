@@ -142,13 +142,26 @@ export interface Mark extends EntityBase {
 
 export type Entity = Box | Mark;
 
-export type NoteTargetKind = "box" | "mark" | "group" | "page";
+export type NoteTargetKind = "box" | "mark" | "group" | "page" | "point";
+
+// A pinned note's own geometry: a point on a page, normalized (0–1) like every
+// other annotation so it survives zoom and re-render. Only "point" notes carry
+// one; every other kind locates itself through its target entity instead.
+export interface NoteAnchor {
+  page: number;
+  x: number;
+  y: number;
+}
 
 export interface Note {
   id: string;
   target: string;
   targetKind: NoteTargetKind;
   body: string;
+  // Set only on "point" notes (a note pinned to a spot with nothing under it).
+  // Such a note is self-anchored: its `target` is its own id, so it keeps the
+  // one lookup key every other note uses and nothing can orphan it.
+  at?: NoteAnchor;
   // Snapshot of the text the note was made from, when it came from a selection.
   quote?: string;
   // Page the target lives on, for list ordering.
@@ -253,6 +266,10 @@ export function newMarkId(): string {
 
 export function newBoxId(): string {
   return uid("s");
+}
+
+export function newNoteId(): string {
+  return uid("n");
 }
 
 // A box's primary role tag, falling back to "other".
@@ -729,8 +746,20 @@ function migrateRegions(raw: unknown): Mark[] {
 function asNoteTargetKind(value: unknown): NoteTargetKind {
   if (value === "region") return "mark";
   if (value === "segment" || value === "marker") return "box";
-  if (value === "box" || value === "mark" || value === "group" || value === "page") return value;
+  if (value === "box" || value === "mark" || value === "group" || value === "page" || value === "point") {
+    return value;
+  }
   return "page";
+}
+
+// A pin without a usable point is not a pin (it would render nowhere), so a
+// malformed `at` is dropped rather than guessed at.
+function asNoteAnchor(raw: unknown): NoteAnchor | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const a = raw as Partial<NoteAnchor>;
+  if (typeof a.page !== "number" || typeof a.x !== "number" || typeof a.y !== "number") return undefined;
+  if (!Number.isFinite(a.page) || !Number.isFinite(a.x) || !Number.isFinite(a.y)) return undefined;
+  return { page: a.page, x: a.x, y: a.y };
 }
 
 // A note is only kept when it has a body and a target id; an empty note is
@@ -743,16 +772,18 @@ function migrateNotes(raw: unknown): Note[] {
     if (!n || typeof n !== "object") continue;
     if (typeof n.target !== "string" || !n.target) continue;
     if (typeof n.body !== "string" || !n.body.trim()) continue;
-    const id = typeof n.id === "string" && n.id ? n.id : `n_${Math.random().toString(36).slice(2, 9)}`;
+    const id = typeof n.id === "string" && n.id ? n.id : newNoteId();
     if (seen.has(id)) continue;
     seen.add(id);
+    const at = asNoteAnchor(n.at);
     out.push({
       id,
       target: n.target,
       targetKind: asNoteTargetKind(n.targetKind),
       body: n.body,
+      at,
       quote: typeof n.quote === "string" ? n.quote : undefined,
-      page: typeof n.page === "number" ? n.page : undefined,
+      page: typeof n.page === "number" ? n.page : at?.page,
       createdAt: typeof n.createdAt === "number" ? n.createdAt : Date.now(),
       updatedAt: typeof n.updatedAt === "number" ? n.updatedAt : Date.now()
     });

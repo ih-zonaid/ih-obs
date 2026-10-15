@@ -638,6 +638,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* Tool-owns-pointer: transparent to gestures while another tool is active. */
 .ihobs-overlay.click-through,
 .ihobs-overlay.click-through .ihobs-region,
+.ihobs-overlay.click-through .ihobs-note-pin,
 .ihobs-overlay.click-through .ihobs-ink-layer { pointer-events: none; }
 
 /* Freehand ink: one fixed SVG per page above the mark divs. It is transparent to
@@ -1728,6 +1729,31 @@ body.resizing { cursor: col-resize; user-select: none; }
   cursor: pointer;
   z-index: 2;
 }
+/* A pinned note: a note dropped on a point with no mark or box under it, so the
+   pin itself is the only thing on the page to click. It is centred on that
+   point and dragged to move (the overlay commits the new point on drop), so it
+   owns its gestures: grab cursor, no text selection, no touch panning. */
+.ihobs-note-pin {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  color: #0b0d10;
+  background: var(--accent);
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  z-index: 3;
+}
+.ihobs-note-pin:hover { background: #9dbafc; }
+.ihobs-note-pin:active { cursor: grabbing; }
+
 .outline-note-badge {
   flex: 0 0 auto;
   font-size: 10px;
