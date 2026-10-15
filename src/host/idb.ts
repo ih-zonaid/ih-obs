@@ -10,6 +10,11 @@ export interface VaultRecord {
   handle: FileSystemDirectoryHandle;
   addedAt: number;
   lastOpenedAt: number;
+  // When set, this entry is a single document opened directly, not a folder:
+  // `handle` is the file's own parent directory and the value is the file's
+  // name within it. Annotations are then stored beside the file as
+  // `<name>.json` rather than under a `.ihobs/` folder.
+  single?: string;
 }
 
 function open(): Promise<IDBDatabase> {
@@ -110,6 +115,54 @@ export async function pickDirectory(): Promise<FileSystemDirectoryHandle> {
     mode: "readwrite",
     startIn: "documents"
   });
+}
+
+// Pick a single supported document. Cancelling rejects with AbortError, which
+// callers treat as "do nothing".
+export async function pickFile(): Promise<FileSystemFileHandle> {
+  const [handle] = await window.showOpenFilePicker({
+    id: "ihobs-file",
+    multiple: false,
+    types: [
+      {
+        description: "Documents",
+        accept: {
+          "application/pdf": [".pdf"],
+          "image/png": [".png"],
+          "image/jpeg": [".jpg", ".jpeg"],
+          "image/gif": [".gif"],
+          "image/webp": [".webp"],
+          "image/bmp": [".bmp"],
+          "image/svg+xml": [".svg"],
+          "text/markdown": [".md", ".markdown", ".mdx"],
+          "application/json": [".json"]
+        }
+      }
+    ]
+  });
+  if (!handle) throw new DOMException("no file selected", "AbortError");
+  return handle;
+}
+
+// A picked file handle cannot create a sibling, so the single-file flow asks for
+// the containing folder. Passing the file as `startIn` opens the folder picker
+// already inside that folder (one click); if a browser rejects the handle form
+// we fall back to a plain folder picker rather than failing the whole open.
+export async function pickFolderFor(
+  file: FileSystemFileHandle
+): Promise<FileSystemDirectoryHandle> {
+  try {
+    return await window.showDirectoryPicker({
+      id: "ihobs-doc-folder",
+      mode: "readwrite",
+      startIn: file
+    });
+  } catch (err) {
+    if ((err as DOMException)?.name === "TypeError") {
+      return window.showDirectoryPicker({ id: "ihobs-doc-folder", mode: "readwrite" });
+    }
+    throw err;
+  }
 }
 
 export async function getLegacyRoot(): Promise<FileSystemDirectoryHandle | null> {

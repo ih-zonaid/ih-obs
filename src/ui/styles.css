@@ -768,6 +768,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   margin-bottom: 24px;
 }
 .hub-head .home-title { margin: 0; }
+.hub-actions { display: flex; align-items: center; gap: 8px; }
+.hub-kind { display: inline-flex; align-items: center; color: var(--fg-dim); flex: 0 0 auto; }
 .hub-row.current { background: var(--bg-2); }
 .hub-row.current .home-name { color: var(--accent); font-weight: 600; }
 .hub-badge {

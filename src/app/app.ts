@@ -7,6 +7,8 @@ import {
   listVaults,
   newId,
   pickDirectory,
+  pickFile,
+  pickFolderFor,
   putVault,
   queryPermission,
   requestReadWrite,
@@ -73,8 +75,8 @@ import {
 import { detectInSpan } from "../segment/detect";
 import { toBitmap } from "../segment/layout";
 import { captureSelection, type CapturedSelection } from "../selection/textSelection";
-import { listTree } from "../vault/tree";
-import { splitPath } from "../vault/types";
+import { extOf, listTree } from "../vault/tree";
+import { splitPath, type FsNode } from "../vault/types";
 import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
@@ -125,6 +127,16 @@ function findNode(nodes: OutlineNode[], id: string): OutlineNode | null {
     if (hit) return hit;
   }
   return null;
+}
+
+// The explorer/palette tree for a single-file entry: one leaf, no folder walk.
+// The explorer, quick-open and the bookmark filter all render off this tree, so
+// giving them the document keeps those surfaces working without special cases.
+function singleFileTree(name: string): FsNode {
+  const children: FsNode[] = name
+    ? [{ name, path: name, kind: "file", ext: extOf(name) }]
+    : [];
+  return { name: "", path: "", kind: "directory", children };
 }
 
 interface Shell {
@@ -395,6 +407,7 @@ export class App {
     this.hub = new VaultHub(this.shell.viewer, {
       onOpen: (id) => void this.openVault(id),
       onAdd: () => void this.addVault(),
+      onAddFile: () => void this.openFile(),
       onRename: (id) => void this.renameVault(id),
       onForget: (id) => void this.forgetVault(id)
     });
@@ -863,6 +876,62 @@ export class App {
     }
   }
 
+  // Open a single document directly (not a folder). A picked file handle cannot
+  // create a sibling, so a second, one-time dialog grants the file's own folder;
+  // that folder handle is what lets the sidecar live beside the file as
+  // `<name>.json`, and it is remembered like a vault so reopening is one pick.
+  private async openFile(): Promise<void> {
+    let file: FileSystemFileHandle;
+    try {
+      file = await pickFile();
+    } catch {
+      return; // cancelled
+    }
+    if (!pickAdapter(file.name)) {
+      window.alert(`ihobs can't open "${file.name}" yet.`);
+      return;
+    }
+    let dir: FileSystemDirectoryHandle;
+    try {
+      dir = await pickFolderFor(file);
+    } catch {
+      return; // cancelled
+    }
+    const ok = await requestReadWrite(dir);
+    if (!ok) {
+      window.alert("Access denied. Grant permission to open this file.");
+      return;
+    }
+
+    // Reuse the row if this exact file was opened before, so a document never
+    // accumulates duplicate entries in the hub.
+    let rec: VaultRecord | undefined;
+    for (const v of this.vaults) {
+      if (v.single !== file.name) continue;
+      try {
+        if (await v.handle.isSameEntry(dir)) {
+          rec = v;
+          break;
+        }
+      } catch {
+        /* not comparable; treat as a new entry */
+      }
+    }
+    if (!rec) {
+      rec = {
+        id: newId(),
+        label: file.name,
+        handle: dir,
+        single: file.name,
+        addedAt: Date.now(),
+        lastOpenedAt: Date.now()
+      };
+    }
+    await putVault(rec);
+    this.vaults = await listVaults();
+    await this.activate(rec, false);
+  }
+
   private async renameVault(id: string): Promise<void> {
     const rec = this.vaults.find((v) => v.id === id);
     if (!rec) return;
@@ -880,7 +949,7 @@ export class App {
   private async forgetVault(id: string): Promise<void> {
     const rec = this.vaults.find((v) => v.id === id);
     if (!rec) return;
-    if (!window.confirm(`Forget "${rec.label}"? Your files and .ihobs data stay untouched.`)) return;
+    if (!window.confirm(`Forget "${rec.label}"? Your files and annotation sidecars stay untouched.`)) return;
     this.prefs = new PrefsStore().withVault(id);
     await this.prefs.clearVaultData();
     await kvRemove(this.scrollKey(id));
@@ -895,8 +964,11 @@ export class App {
   private async activate(rec: VaultRecord, reopenLast: boolean): Promise<void> {
     this.teardown();
     this.vault = rec;
-    this.store = new SidecarStore(rec.handle);
-    this.reviewStore = new ReviewStore(rec.handle);
+    // A single-file entry stores sidecars beside its one document; a vault keeps
+    // them in `.ihobs/`.
+    const beside = !!rec.single;
+    this.store = new SidecarStore(rec.handle, { beside });
+    this.reviewStore = new ReviewStore(rec.handle, { beside });
     this.prefs = new PrefsStore().withVault(rec.id);
     const prefs = await this.prefs.load();
     this.toolbar.setVaultLabel(rec.label);
@@ -926,6 +998,13 @@ export class App {
     await this.loadScroll(rec.id);
     await this.refreshTree();
 
+    // A single-file entry always opens its one document; there is no folder home
+    // to fall back to and no "last opened" sibling worth remembering.
+    if (rec.single) {
+      await this.openPath(rec.single);
+      return;
+    }
+
     if (reopenLast && prefs.lastOpened) {
       const ok = await this.nodeHandle(prefs.lastOpened);
       if (ok) {
@@ -951,11 +1030,18 @@ export class App {
 
   private async refreshTree(): Promise<void> {
     if (!this.vault) return;
-    const tree = await listTree(this.vault.handle);
+    const tree = await this.treeForVault();
     const prefs = this.prefs.get();
     this.explorer.setState(prefs.expanded, prefs.pinned);
     this.explorer.render(tree);
     this.palette.setTree(tree);
+  }
+
+  // A vault walks the folder; a single-file entry exposes only its one document.
+  private async treeForVault(): Promise<FsNode> {
+    if (!this.vault) return singleFileTree("");
+    if (this.vault.single) return singleFileTree(this.vault.single);
+    return listTree(this.vault.handle);
   }
 
   private async togglePin(path: string): Promise<void> {
@@ -963,7 +1049,7 @@ export class App {
     const prefs = this.prefs.get();
     this.explorer.setState(prefs.expanded, prefs.pinned);
     if (this.vault) {
-      const tree = await listTree(this.vault.handle);
+      const tree = await this.treeForVault();
       this.explorer.render(tree);
       this.explorer.setActive(this.currentPath);
     }

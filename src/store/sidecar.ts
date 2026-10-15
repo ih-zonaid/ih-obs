@@ -15,16 +15,26 @@ function sidecarName(docPath: string): string {
   return docPath.replace(/[\\/]/g, "__") + EXT;
 }
 
+export interface SidecarOptions {
+  // Single-file mode. `vault` is then the document's own directory rather than
+  // a vault root, so the sidecar is written beside the document as
+  // `<name>.json` instead of under `.ihobs/`. The filename transform is the
+  // same either way; only the directory differs.
+  beside?: boolean;
+}
+
 export class SidecarStore {
   private readonly vault: FileSystemDirectoryHandle;
+  private readonly beside: boolean;
   private readonly cache = new Map<string, Sidecar>();
 
-  constructor(vault: FileSystemDirectoryHandle) {
+  constructor(vault: FileSystemDirectoryHandle, options: SidecarOptions = {}) {
     this.vault = vault;
+    this.beside = options.beside ?? false;
   }
 
   private async dir(): Promise<FileSystemDirectoryHandle> {
-    return ensureDirPath(this.vault, [ROOT]);
+    return this.beside ? this.vault : ensureDirPath(this.vault, [ROOT]);
   }
 
   async load(docPath: string, kind: Sidecar["kind"]): Promise<Sidecar> {

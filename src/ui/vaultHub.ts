@@ -4,6 +4,7 @@ import { icon, type IconName } from "./icons";
 export interface VaultHubHandlers {
   onOpen(id: string): void;
   onAdd(): void;
+  onAddFile(): void;
   onRename(id: string): void;
   onForget(id: string): void;
 }
@@ -33,7 +34,20 @@ export class VaultHub {
     head.className = "hub-head";
     const title = document.createElement("h1");
     title.className = "home-title";
-    title.textContent = "Vaults";
+    title.textContent = "Vaults & files";
+
+    const actions = document.createElement("div");
+    actions.className = "hub-actions";
+
+    const openFile = document.createElement("button");
+    openFile.className = "tb-btn";
+    openFile.appendChild(icon("file-text", 14));
+    const fileLabel = document.createElement("span");
+    fileLabel.textContent = "open file";
+    openFile.appendChild(fileLabel);
+    openFile.title = "open a single document (pdf, image, markdown, json)";
+    openFile.addEventListener("click", () => this.handlers.onAddFile());
+
     const add = document.createElement("button");
     add.className = "tb-btn";
     add.appendChild(icon("plus", 14));
@@ -42,13 +56,15 @@ export class VaultHub {
     add.appendChild(addLabel);
     add.title = "add a folder as a vault";
     add.addEventListener("click", () => this.handlers.onAdd());
-    head.append(title, add);
+
+    actions.append(openFile, add);
+    head.append(title, actions);
     wrap.appendChild(head);
 
     if (!vaults.length) {
       const hint = document.createElement("p");
       hint.className = "home-hint";
-      hint.textContent = "No vaults yet. Add a folder to get started.";
+      hint.textContent = "No vaults or files yet. Add a folder as a vault, or open a single file.";
       wrap.appendChild(hint);
       this.root.appendChild(wrap);
       return;
@@ -67,6 +83,14 @@ export class VaultHub {
     const row = document.createElement("div");
     row.className = "home-row hub-row" + (current ? " current" : "");
     row.addEventListener("click", () => this.handlers.onOpen(v.id));
+
+    if (v.single) {
+      const kind = document.createElement("span");
+      kind.className = "hub-kind";
+      kind.title = "single file";
+      kind.appendChild(icon("file-text", 13));
+      row.appendChild(kind);
+    }
 
     const name = document.createElement("span");
     name.className = "home-name";

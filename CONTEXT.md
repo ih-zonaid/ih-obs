@@ -257,6 +257,15 @@ Order is document position (page, then y).
 ### Shell / app
 - Multi-vault hub: add, open, rename, forget vaults; handles persisted in
   IndexedDB; permission re-request flow.
+- **Single-file mode**: "open file" opens one document directly instead of a
+  folder. A picked file handle cannot create a sibling, so a second, one-time
+  dialog grants the file's own parent folder (the picker opens there already);
+  that folder handle is remembered in IndexedDB like a vault and carries
+  `VaultRecord.single` (the file name), so reopening is one pick. The entry's
+  `handle` is that folder and `path` is just the file name, so the whole
+  `path`-keyed machinery (adapter, overlay, prefs, scroll) is unchanged; only
+  the sidecar *layout* differs (see §7). The explorer/quick-open show a
+  synthetic one-file tree.
 - Explorer tree, quick-open palette (⌘/Ctrl+P), home with recents + pins,
   per-document scroll memory, last-opened restore.
 - Zoom (buttons, ctrl+wheel, keys) with page-aware re-render; page indicator
@@ -309,9 +318,15 @@ build/            pwa.ts (web app manifest, generated icons, service worker)
   - `saveEntities`, `saveNotes`, `saveRule` each merge into the existing
     model and rewrite version 6. `saveEntities` writes the whole entity array
     (boxes, anchors and marks together), so there is a single writer.
+  - **Single-file mode** (`SidecarStore({ beside: true })`): the store's root is
+    the document's own directory, so the sidecar is `<name>.json` beside the
+    file (e.g. `book.pdf` → `book.pdf.json`). Same filename transform; only the
+    directory differs (no `.ihobs/`).
 - **Review state**: `.ihobs/review/<path with / → __>.json` — one file per
   document, keyed by mark id, written only by `ReviewStore` (§3b). A document
-  whose last row is dropped removes its file.
+  whose last row is dropped removes its file. In single-file mode
+  (`ReviewStore({ beside: true })`) it is `<name>.review.json` beside the file,
+  kept distinct from the `<name>.json` annotation sidecar.
 - **Prefs / theme / scroll / recents**: `localStorage` (or
   `chrome.storage.local` if present) via `src/store/kv.ts`.
   Per-vault pref keys: `ihobs:prefs:<vaultId>`.

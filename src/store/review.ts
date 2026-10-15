@@ -31,9 +31,18 @@ export interface StoredReviewDoc {
 const ROOT = ".ihobs";
 const DIR = "review";
 const EXT = ".json";
+// Single-file mode writes the review document beside the file instead of under
+// `.ihobs/review`. `.review` keeps it distinct from the `<name>.json`
+// annotation sidecar, so the pair sits next to the document as
+// `<name>.json` + `<name>.review.json`.
+const BESIDE_EXT = ".review.json";
 
-function reviewName(docPath: string): string {
-	return docPath.replace(/[\\/]/g, "__") + EXT;
+function reviewName(docPath: string, beside = false): string {
+	return docPath.replace(/[\\/]/g, "__") + (beside ? BESIDE_EXT : EXT);
+}
+
+export interface ReviewOptions {
+	beside?: boolean;
 }
 
 function emptyDoc(docPath: string): StoredReviewDoc {
@@ -75,13 +84,16 @@ export function migrateReviewDoc(stored: unknown, docPath: string): StoredReview
 
 export class ReviewStore {
 	private readonly vault: FileSystemDirectoryHandle;
+	private readonly beside: boolean;
 	private readonly cache = new Map<string, StoredReviewDoc>();
 
-	constructor(vault: FileSystemDirectoryHandle) {
+	constructor(vault: FileSystemDirectoryHandle, options: ReviewOptions = {}) {
 		this.vault = vault;
+		this.beside = options.beside ?? false;
 	}
 
 	private async dir(): Promise<FileSystemDirectoryHandle> {
+		if (this.beside) return this.vault;
 		const ihobs = await ensureDirPath(this.vault, [ROOT]);
 		return ensureDirPath(ihobs, [DIR]);
 	}
@@ -92,7 +104,7 @@ export class ReviewStore {
 		const dir = await this.dir();
 		let parsed: unknown = null;
 		try {
-			const file = await dir.getFileHandle(reviewName(docPath));
+			const file = await dir.getFileHandle(reviewName(docPath, this.beside));
 			parsed = JSON.parse(await readText(file));
 		} catch {
 			parsed = null;
@@ -149,7 +161,7 @@ export class ReviewStore {
 			this.cache.set(docPath, emptyDoc(docPath));
 			try {
 				const dir = await this.dir();
-				await dir.removeEntry(reviewName(docPath));
+				await dir.removeEntry(reviewName(docPath, this.beside));
 			} catch {
 				/* already gone */
 			}
@@ -161,7 +173,7 @@ export class ReviewStore {
 	private async write(docPath: string, doc: StoredReviewDoc): Promise<void> {
 		const next: StoredReviewDoc = { ...doc, version: REVIEW_VERSION, updatedAt: Date.now() };
 		const dir = await this.dir();
-		await writeText(dir, reviewName(docPath), JSON.stringify(next, null, 2));
+		await writeText(dir, reviewName(docPath, this.beside), JSON.stringify(next, null, 2));
 		this.cache.set(docPath, next);
 	}
 
