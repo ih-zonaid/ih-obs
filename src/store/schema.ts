@@ -91,6 +91,19 @@ export interface Span {
   h: number;
 }
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
+// A frame's optional free-quad outline: four page-normalized corners, clockwise
+// from the top-left (TL, TR, BR, BL). It is a refinement *over* `spans[0]`, which
+// always holds the corners' axis-aligned bounding box — so outline order,
+// containment, crop derivation and hit-testing keep reading a plain rect and a
+// skewed frame costs them nothing. Absent = a plain rectangular frame.
+export type CornerIndex = 0 | 1 | 2 | 3;
+export type Corners = [Point, Point, Point, Point];
+
 // ---- Entities --------------------------------------------------------------
 
 export interface EntityBase {
@@ -111,6 +124,9 @@ export interface Card {
 
 export interface Box extends EntityBase {
   kind: "box";
+  // Set only on a frame whose corners have been pulled into a quad. `spans[0]`
+  // is kept as its bounding box (see Corners).
+  quad?: Corners;
 }
 
 // A freehand stroke. Points are page-normalized (0–1) like every other
@@ -301,6 +317,9 @@ export function setMarkKind(mark: Mark, kind: MarkKind): void {
 // The eight resize handles, named by the compass edge/corner they move.
 export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
+// The four side handles, which move a whole side of a frame in parallel.
+export type Edge = "n" | "e" | "s" | "w";
+
 // Translate a span by a normalized delta, clamped so it stays on the page.
 export function translateSpan(span: Span, dx: number, dy: number): Span {
   const x = Math.min(1 - span.w, Math.max(0, span.x + dx));
@@ -321,6 +340,143 @@ export function resizeSpan(span: Span, handle: Handle, dx: number, dy: number): 
   if (handle.includes("n")) y0 = Math.min(y1 - MIN_SPAN, Math.max(0, y0 + dy));
   if (handle.includes("s")) y1 = Math.max(y0 + MIN_SPAN, Math.min(1, y1 + dy));
   return { ...span, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// ---- Quad frames -----------------------------------------------------------
+
+// The four corners a frame is drawn and cropped by: its stored quad when it has
+// one, otherwise the corners of its rectangular span (TL, TR, BR, BL).
+export function quadCorners(box: Box): Corners {
+  if (box.quad) return box.quad;
+  const s = box.spans[0];
+  if (!s) return [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
+  return [
+    { x: s.x, y: s.y },
+    { x: s.x + s.w, y: s.y },
+    { x: s.x + s.w, y: s.y + s.h },
+    { x: s.x, y: s.y + s.h }
+  ];
+}
+
+// The axis-aligned bounding box of a set of corners.
+function aabbOfSpan(page: number, corners: Corners): Span {
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const x1 = Math.max(...xs);
+  const y1 = Math.max(...ys);
+  return { page, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// Writes a set of corners onto a frame and re-derives its bounding span, so the
+// stored quad and `spans[0]` can never drift apart. A set of corners that is
+// still an axis-aligned rectangle drops the quad entirely, so a frame that was
+// only ever resized on its sides stays a plain rectangle (no SVG outline path).
+export function applyQuad(box: Box, corners: Corners): void {
+  box.spans[0] = aabbOfSpan(box.spans[0]?.page ?? 0, corners);
+  box.quad = isAxisAligned(corners) ? undefined : corners;
+}
+
+const QUAD_EPS = 1e-9;
+
+function isAxisAligned(c: Corners): boolean {
+  const [tl, tr, br, bl] = c;
+  return (
+    Math.abs(tl.y - tr.y) <= QUAD_EPS &&
+    Math.abs(br.y - bl.y) <= QUAD_EPS &&
+    Math.abs(tl.x - bl.x) <= QUAD_EPS &&
+    Math.abs(tr.x - br.x) <= QUAD_EPS
+  );
+}
+
+// Pulls one corner of a frame to a normalized point. The point is clamped to the
+// page and bounded by the corner's two neighbours, so the quad can shear but
+// never fold over itself. `quad` is materialized from the current (rectangular)
+// corners on first use, which is what lets a plain frame be skewed corner by
+// corner.
+export function setQuadCorner(box: Box, index: CornerIndex, x: number, y: number): void {
+  const corners = quadCorners(box).map((c) => ({ ...c })) as Corners;
+  const [tl, tr, br, bl] = corners;
+  switch (index) {
+    case 0: // TL: left of TR, above BL
+      x = Math.min(x, tr.x);
+      y = Math.min(y, bl.y);
+      break;
+    case 1: // TR: right of TL, above BR
+      x = Math.max(x, tl.x);
+      y = Math.min(y, br.y);
+      break;
+    case 2: // BR: right of BL, below TR
+      x = Math.max(x, bl.x);
+      y = Math.max(y, tr.y);
+      break;
+    case 3: // BL: left of BR, below TL
+      x = Math.min(x, br.x);
+      y = Math.max(y, tl.y);
+      break;
+  }
+  corners[index] = { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  applyQuad(box, corners);
+}
+
+// Translates a whole quad (and its bounding span) by a normalized delta, clamped
+// so the bounding box stays on the page.
+export function translateQuad(box: Box, dx: number, dy: number): void {
+  const page = box.spans[0]?.page ?? 0;
+  const corners = quadCorners(box).map((c) => ({ ...c })) as Corners;
+  const aabb = aabbOfSpan(page, corners);
+  const ndx = Math.min(1 - (aabb.x + aabb.w), Math.max(-aabb.x, dx));
+  const ndy = Math.min(1 - (aabb.y + aabb.h), Math.max(-aabb.y, dy));
+  applyQuad(box, corners.map((c) => ({ x: c.x + ndx, y: c.y + ndy })) as Corners);
+}
+
+// Moves one whole side of a frame by a normalized delta. Both corners of the side
+// move by the same amount, so the side travels parallel to itself: a rectangle
+// stays a rectangle and a quad keeps its skew. Clamped to the page and to
+// MIN_SPAN against the opposite side, the same guard `resizeSpan` uses.
+export function moveQuadEdge(box: Box, edge: Edge, dx: number, dy: number): void {
+  const corners = quadCorners(box).map((c) => ({ ...c })) as Corners;
+  const [tl, tr, br, bl] = corners;
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  if (edge === "n" || edge === "s") {
+    const topMin = Math.min(tl.y, tr.y);
+    const topMax = Math.max(tl.y, tr.y);
+    const botMin = Math.min(bl.y, br.y);
+    const botMax = Math.max(bl.y, br.y);
+    let d = dy;
+    if (edge === "n") d = Math.min(d, botMin - MIN_SPAN - topMax);
+    else d = Math.max(d, topMax + MIN_SPAN - botMin);
+    // Only the moving side is clamped to the page.
+    if (edge === "n") d = Math.max(d, -topMin);
+    else d = Math.min(d, 1 - botMax);
+    if (edge === "n") {
+      corners[0].y = clamp(tl.y + d);
+      corners[1].y = clamp(tr.y + d);
+    } else {
+      corners[2].y = clamp(br.y + d);
+      corners[3].y = clamp(bl.y + d);
+    }
+  } else {
+    const leftMin = Math.min(tl.x, bl.x);
+    const leftMax = Math.max(tl.x, bl.x);
+    const rightMin = Math.min(tr.x, br.x);
+    const rightMax = Math.max(tr.x, br.x);
+    let d = dx;
+    if (edge === "w") d = Math.min(d, rightMin - MIN_SPAN - leftMax);
+    else d = Math.max(d, leftMax + MIN_SPAN - rightMin);
+    // Only the moving side is clamped to the page.
+    if (edge === "w") d = Math.max(d, -leftMin);
+    else d = Math.min(d, 1 - rightMax);
+    if (edge === "e") {
+      corners[1].x = clamp(tr.x + d);
+      corners[2].x = clamp(br.x + d);
+    } else {
+      corners[0].x = clamp(tl.x + d);
+      corners[3].x = clamp(bl.x + d);
+    }
+  }
+  applyQuad(box, corners);
 }
 
 // Anchor helpers: anchors are boxes whose geometry is a thin full-width line.
@@ -762,6 +918,21 @@ function asNoteAnchor(raw: unknown): NoteAnchor | undefined {
   return { page: a.page, x: a.x, y: a.y };
 }
 
+// A frame's quad is kept only when it is four finite points; a malformed one is
+// dropped, so the frame falls back to its rectangular span rather than throwing.
+function asCorners(raw: unknown): Corners | undefined {
+  if (!Array.isArray(raw) || raw.length !== 4) return undefined;
+  const out: Point[] = [];
+  for (const p of raw) {
+    if (!p || typeof p !== "object") return undefined;
+    const q = p as Partial<Point>;
+    if (typeof q.x !== "number" || typeof q.y !== "number") return undefined;
+    if (!Number.isFinite(q.x) || !Number.isFinite(q.y)) return undefined;
+    out.push({ x: q.x, y: q.y });
+  }
+  return out as Corners;
+}
+
 // A note is only kept when it has a body and a target id; an empty note is
 // noise the user did not mean to keep.
 function migrateNotes(raw: unknown): Note[] {
@@ -825,7 +996,8 @@ function migrateEntities(raw: unknown): Entity[] {
         id: e.id,
         tags,
         label: typeof e.label === "string" ? e.label : "",
-        spans: e.spans
+        spans: e.spans,
+        quad: asCorners((e as Box).quad)
       });
     }
   }

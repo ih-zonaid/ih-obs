@@ -886,6 +886,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .player-shuffle { padding: 2px 8px; color: var(--fg-dim); }
 .player-shuffle:hover { color: var(--fg); }
 .player-shuffle.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+.player-copy { padding: 2px 8px; color: var(--fg-dim); }
+.player-copy:hover { color: var(--fg); }
 .player-stage {
   flex: 1;
   min-height: 0;
@@ -1337,6 +1339,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .seg-box.active .seg-tag { background: var(--hl); }
 
+/* A frame with a quad draws its own skewed outline; the wrapper's rectangle is
+   only the corners' bounding box, so it drops its own border/background. */
+.seg-box.quad,
+.seg-box.quad:hover,
+.seg-box.quad.active {
+  border: none !important;
+  background: none !important;
+}
+.seg-quad-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.seg-quad {
+  fill: rgba(125, 207, 255, 0.06);
+  stroke: rgba(125, 207, 255, 0.9);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.seg-box.quad:hover .seg-quad { fill: rgba(125, 207, 255, 0.14); }
+.seg-box.quad.active .seg-quad {
+  fill: rgba(245, 197, 24, 0.14);
+  stroke: var(--hl);
+}
+
 /* Transform frame: the move/resize chrome for the selected entity only. The
    layer is transparent to clicks; only the frame itself is interactive. */
 .transform-layer {
@@ -1354,6 +1383,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   outline-offset: 1px;
 }
 .transform-frame[data-axis="y"] { cursor: ns-resize; }
+/* A quad frame's outline is the skew polygon drawn by the seg layer, so the
+   transform chrome contributes only the four corner handles. */
+.transform-frame.quad { outline: none; }
 .transform-handle {
   position: absolute;
   width: 9px;

@@ -1,4 +1,4 @@
-import { resizeSpan, translateSpan, type Handle, type Span } from "../store/schema";
+import { resizeSpan, translateSpan, type CornerIndex, type Corners, type Edge, type Handle, type Point, type Span } from "../store/schema";
 import type { Surface } from "../adapters/types";
 
 export interface TransformTarget {
@@ -10,6 +10,13 @@ export interface TransformTarget {
   handles: Handle[];
   // Which deltas a move may apply. "y" locks an anchor to vertical movement.
   axis?: "x" | "y" | "both";
+  // Present for a quad frame: the four corners (TL, TR, BR, BL) the handles sit
+  // on. When set, a corner handle moves that one corner and a side handle moves
+  // that whole side in parallel; `span` is their bounding box.
+  corners?: Corners;
+  // True only when the frame is actually skewed, so the seg layer is drawing a
+  // polygon and the transform chrome should not also draw its own rectangle.
+  skew?: boolean;
 }
 
 export interface TransformOptions {
@@ -24,6 +31,16 @@ export interface TransformOptions {
   onCommit(span: Span, origin: Span): void;
   // Escape mid-drag: restore the pre-drag span.
   onCancel(origin: Span): void;
+  // Quad-frame drags. A corner reports the corner (0=TL, 1=TR, 2=BR, 3=BL) and
+  // the pointer in page-normalized coords; a side reports its edge and the delta
+  // to move that whole side by. Preview fires live; commit persists once on
+  // release; cancel (Escape / pointercancel) drops the drag so the caller can
+  // restore the pre-drag shape.
+  onCornerPreview?(index: CornerIndex, point: Point): void;
+  onCornerCommit?(index: CornerIndex, point: Point): void;
+  onEdgePreview?(edge: Edge, dx: number, dy: number): void;
+  onEdgeCommit?(edge: Edge, dx: number, dy: number): void;
+  onQuadCancel?(): void;
   // Pointer released without moving: forward the click (e.g. reveal a mark).
   onClick(): void;
   // Right-click on the frame body: reopen the entity's menu, since the frame
@@ -34,14 +51,49 @@ export interface TransformOptions {
 }
 
 interface Drag {
-  mode: "move" | "resize";
+  mode: "move" | "resize" | "corner" | "edge";
   handle?: Handle;
+  // Set only for a quad-frame corner drag.
+  corner?: CornerIndex;
+  // Set only for a quad-frame side drag.
+  edge?: Edge;
+  // Last corner point (page-normalized), set for a corner drag.
+  point?: Point;
+  // Last delta, set for a side drag.
+  delta?: { dx: number; dy: number };
   surface: number;
   origin: Span;
   last: Span;
   startX: number;
   startY: number;
   moved: boolean;
+}
+
+// A corner handle's name -> its corner index on a quad. Edge handles (n/e/s/w)
+// have no corner and return -1.
+function cornerIndexOf(handle: Handle): number {
+  if (handle === "nw") return 0;
+  if (handle === "ne") return 1;
+  if (handle === "se") return 2;
+  if (handle === "sw") return 3;
+  return -1;
+}
+
+// A side handle's name -> its edge, or null for a corner handle.
+function edgeOf(handle: Handle): Edge | null {
+  return handle === "n" || handle === "e" || handle === "s" || handle === "w" ? handle : null;
+}
+
+// Where a handle sits on a quad, for drawing: a corner handle on its corner, a
+// side handle on that side's midpoint.
+function quadHandlePoint(handle: Handle, corners: Corners): Point | null {
+  const ci = cornerIndexOf(handle);
+  if (ci >= 0) return corners[ci];
+  const pair: [number, number] | null =
+    handle === "n" ? [0, 1] : handle === "e" ? [1, 2] : handle === "s" ? [2, 3] : handle === "w" ? [3, 0] : null;
+  if (!pair) return null;
+  const [a, b] = pair;
+  return { x: (corners[a].x + corners[b].x) / 2, y: (corners[a].y + corners[b].y) / 2 };
 }
 
 // How far the pointer must travel before a press becomes a drag rather than a
@@ -128,7 +180,7 @@ export class Transform {
     if (!layer || layer.classList.contains("hidden")) return;
     const { w, h } = this.size(target.span.page);
     const frame = document.createElement("div");
-    frame.className = "transform-frame";
+    frame.className = "transform-frame" + (target.skew ? " quad" : "");
     frame.dataset.axis = target.axis ?? "both";
     frame.style.left = `${target.span.x * w}px`;
     frame.style.top = `${target.span.y * h}px`;
@@ -138,6 +190,16 @@ export class Transform {
       const el = document.createElement("div");
       el.className = "transform-handle";
       el.dataset.h = handle;
+      // A quad target puts each handle on its own (possibly skewed) corner or
+      // side midpoint; the frame div is only their bounding box, so offset by
+      // its origin.
+      if (target.corners) {
+        const p = quadHandlePoint(handle, target.corners);
+        if (p) {
+          el.style.left = `${(p.x - target.span.x) * w}px`;
+          el.style.top = `${(p.y - target.span.y) * h}px`;
+        }
+      }
       frame.appendChild(el);
     }
     layer.appendChild(frame);
@@ -152,10 +214,14 @@ export class Transform {
     const surface = Number(layer.dataset.surface);
     if (surface !== target.span.page) return;
     const handle = (e.target as HTMLElement).dataset.h as Handle | undefined;
+    const corner = handle && target.corners ? cornerIndexOf(handle) : -1;
+    const edge = handle && target.corners ? edgeOf(handle) : null;
     const origin = { ...target.span };
     this.drag = {
-      mode: handle ? "resize" : "move",
+      mode: corner >= 0 ? "corner" : edge ? "edge" : handle ? "resize" : "move",
       handle,
+      corner: corner >= 0 ? (corner as CornerIndex) : undefined,
+      edge: edge ?? undefined,
       surface,
       origin,
       last: origin,
@@ -170,12 +236,29 @@ export class Transform {
     const drag = this.drag;
     if (!drag) return;
     const { w, h } = this.size(drag.surface);
-    let dx = (e.clientX - drag.startX) / w;
-    let dy = (e.clientY - drag.startY) / h;
     if (!drag.moved) {
       const px = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
       if (px < (e.pointerType === "touch" ? TOUCH_THRESHOLD_PX : DRAG_THRESHOLD_PX)) return;
       drag.moved = true;
+    }
+    // A quad corner follows the pointer directly (page-normalized), rather than
+    // applying a delta to an edge. Bounds/clamping live in the app's handler.
+    if (drag.corner !== undefined) {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const point = { x: (e.clientX - rect.left) / w, y: (e.clientY - rect.top) / h };
+      drag.point = point;
+      this.options.onCornerPreview?.(drag.corner, point);
+      this.repaint();
+      return;
+    }
+    let dx = (e.clientX - drag.startX) / w;
+    let dy = (e.clientY - drag.startY) / h;
+    // A quad side moves as a whole; report the raw delta straight to the app.
+    if (drag.edge) {
+      drag.delta = { dx, dy };
+      this.options.onEdgePreview?.(drag.edge, dx, dy);
+      this.repaint();
+      return;
     }
     const axis = this.options.getTarget()?.axis ?? "both";
     if (axis === "y") dx = 0;
@@ -195,8 +278,15 @@ export class Transform {
     const layer = e.currentTarget as HTMLElement;
     layer.releasePointerCapture(e.pointerId);
     this.drag = null;
-    if (drag.moved) this.options.onCommit(drag.last, drag.origin);
-    else this.options.onClick();
+    if (!drag.moved) {
+      this.options.onClick();
+    } else if (drag.corner !== undefined && drag.point) {
+      this.options.onCornerCommit?.(drag.corner, drag.point);
+    } else if (drag.edge && drag.delta) {
+      this.options.onEdgeCommit?.(drag.edge, drag.delta.dx, drag.delta.dy);
+    } else {
+      this.options.onCommit(drag.last, drag.origin);
+    }
   }
 
   // A touch that turns into a scroll never reaches pointerup, so the drag is
@@ -207,7 +297,8 @@ export class Transform {
     const drag = this.drag;
     if (!drag) return;
     this.drag = null;
-    this.options.onCancel(drag.origin);
+    if (drag.corner !== undefined || drag.edge) this.options.onQuadCancel?.();
+    else this.options.onCancel(drag.origin);
     this.repaint();
   }
 
@@ -218,9 +309,10 @@ export class Transform {
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     if (this.drag) {
       e.preventDefault();
-      const origin = this.drag.origin;
+      const drag = this.drag;
       this.drag = null;
-      this.options.onCancel(origin);
+      if (drag.corner !== undefined || drag.edge) this.options.onQuadCancel?.();
+      else this.options.onCancel(drag.origin);
       this.repaint();
       return;
     }

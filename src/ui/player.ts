@@ -1,8 +1,8 @@
-import { hexToRgba, INK_COLOR, INK_WEIGHT, isInk, type Mark, type Span } from "../store/schema";
+import { hexToRgba, INK_COLOR, INK_WEIGHT, isInk, type Corners, type Mark, type Span } from "../store/schema";
 import type { PageImage } from "../adapters/types";
 import type { ReviewGrade } from "../srs";
 import { renderMarkdown } from "../notes/render";
-import { icon } from "./icons";
+import { icon, setIcon } from "./icons";
 
 export interface PlayerItem {
   id: string;
@@ -14,6 +14,9 @@ export interface PlayerItem {
   // The frame a card crop is clipped by. The up/down context controls expand
   // the crop within it, so revealing extra lines never leaks the other column.
   bounds?: Span | null;
+  // A skewed frame's quad (TL, TR, BR, BL, page-normalized). When set the crop
+  // canvas is clipped to it, so the card shows exactly what the quad outlines.
+  clip?: Corners | null;
   // The mark's recall cue, shown as markdown above the crop while unrevealed.
   cue?: string;
 }
@@ -81,6 +84,9 @@ const CONTEXT_MAX = 0.5;
 // Neighbouring marks in the crop are painted this flat grey so they stay
 // occluded but do not compete with the focused answer's own colour.
 const CONTEXT_COLOR = "#9ca3af";
+// How forgiving a click on a grey context occlusion is, in canvas pixels — a
+// one-line occlusion is thin, so an exact hit rectangle is fiddly to tap.
+const CONTEXT_HIT_SLOP = 4;
 
 // Mirrors the coarse-pointer block in styles.css that collapses the note strip
 // to one line. Kept as one string on both sides: the CSS decides the layout, and
@@ -94,6 +100,10 @@ export class Player {
   private items: PlayerItem[] = [];
   private index = 0;
   private revealed = false;
+  // Grey context occlusions the user has peeked at for the current card, by mark
+  // id. Session-only and independent of `revealed`: a peek is a reading action,
+  // not an edit, and it works whether the answer is hidden or showing.
+  private contextRevealed = new Set<string>();
   private open = false;
   private renderToken = 0;
   // Extra context revealed above/below a card's base crop, as page-normalized
@@ -177,6 +187,7 @@ export class Player {
     this.noteExpanded = false;
     this.pending = [];
     this.byId.clear();
+    this.contextRevealed.clear();
     this.baseCanvas = null;
     this.fullCanvas = null;
     this.fullPage = -1;
@@ -215,7 +226,20 @@ export class Player {
     shuffle.id = "player-shuffle";
     shuffle.appendChild(icon("shuffle", 15));
     shuffle.addEventListener("click", () => this.toggleRandom());
-    head.append(title, shuffle, close);
+
+    // Copies the crop on screen to the clipboard as a PNG, so a card can be
+    // pasted into a chat, note or issue. Beside shuffle rather than in the foot,
+    // and for the same reason: it is a read-only action, so a stray tap cannot
+    // cost an answer.
+    const copy = document.createElement("button");
+    copy.className = "tb-btn player-copy";
+    copy.id = "player-copy";
+    copy.title = "copy crop image";
+    copy.setAttribute("aria-label", "copy crop image");
+    copy.appendChild(icon("copy", 15));
+    copy.addEventListener("click", () => void this.copyCrop());
+
+    head.append(title, shuffle, copy, close);
 
     const stage = document.createElement("div");
     stage.className = "player-stage";
@@ -225,6 +249,10 @@ export class Player {
     const canvas = document.createElement("canvas");
     canvas.className = "player-canvas";
     canvas.id = "player-canvas";
+    // The crop is one canvas, so a peek at a grey context occlusion goes through
+    // a hit test rather than a per-mark element.
+    canvas.addEventListener("click", (e) => this.contextClick(e));
+    canvas.addEventListener("pointermove", (e) => this.contextHover(e));
     // The note strip sits under the crop, mirroring the cue above it, so the
     // answer and the note written about it are read in one place.
     const note = document.createElement("div");
@@ -365,6 +393,65 @@ export class Player {
     button.setAttribute("aria-pressed", String(this.random));
   }
 
+  // Copies the crop to the clipboard as a PNG. The page raster arrives as an
+  // ImageData rather than a cross-origin <img>, so the canvas is not tainted and
+  // toBlob() succeeds; RENDER_SCALE makes the paste crisp.
+  //
+  // Composites to a throwaway canvas rather than exporting the one on screen:
+  // the export drops the occlusions (mode `plain`), because a still image cannot
+  // be revealed on click — a cover pasted into a chat would just be an opaque box
+  // with the answer hidden behind it. Highlights and ink are kept: neither hides
+  // text, and both are part of what was marked.
+  private async copyCrop(): Promise<void> {
+    const live = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
+    const item = this.current();
+    // A card with no span is a 1x1 placeholder; there is nothing to copy.
+    if (!live || !item || !item.span || live.width <= 1 || live.height <= 1) return;
+    const span = this.effectiveCrop(item) ?? item.span;
+    const canvas = document.createElement("canvas");
+    canvas.width = live.width;
+    canvas.height = live.height;
+    if (!this.paintMarks(canvas, item, span, "plain")) return;
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return;
+    // ClipboardItem is the only image path; Firefox lacks it, so fall back to a
+    // download rather than losing the capture entirely.
+    const copied = await this.writeImageToClipboard(blob);
+    if (!copied) this.downloadBlob(blob);
+    this.flashCopyButton();
+  }
+
+  private async writeImageToClipboard(blob: Blob): Promise<boolean> {
+    if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return false;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private downloadBlob(blob: Blob): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `card-${this.index + 1}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Confirms the copy with a tick rather than a toast; the player has no toast
+  // surface and the button is where the eye already is.
+  private flashCopyButton(): void {
+    const button = this.root.querySelector<HTMLElement>("#player-copy");
+    if (!button) return;
+    setIcon(button, "check", 15);
+    window.setTimeout(() => {
+      const el = this.root.querySelector<HTMLElement>("#player-copy");
+      if (el) setIcon(el, "copy", 15);
+    }, 900);
+  }
+
   /**
    * Hands a graded card back for the sitting. The caller calls this once the
    * schedule is written: a card left on a sub-day step (an FSRS learning step) is
@@ -396,6 +483,7 @@ export class Player {
   private resetContext(): void {
     this.padUp = 0;
     this.padDown = 0;
+    this.contextRevealed.clear();
   }
 
   private toggleReveal(): void {
@@ -765,29 +853,115 @@ export class Player {
   private drawMarks(): void {
     const item = this.current();
     const canvas = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
-    const base = this.baseCanvas;
-    if (!item || !item.span || !canvas || !base) return;
+    if (!item || !item.span || !canvas) return;
     const span = this.effectiveCrop(item) ?? item.span;
+    this.paintMarks(canvas, item, span, this.revealed ? "revealed" : "covered");
+  }
+
+  // Which grey context occlusion is under a pointer, if any. The crop is one
+  // canvas, so a peek needs a hit test; the smallest match wins on overlap and a
+  // small slop keeps a thin one-line occlusion easy to tap.
+  private contextMarkAt(clientX: number, clientY: number): string | null {
+    const item = this.current();
+    const canvas = this.root.querySelector<HTMLCanvasElement>("#player-canvas");
+    if (!item || !item.span || !canvas || !canvas.width || !canvas.height) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const span = this.effectiveCrop(item) ?? item.span;
+    // Map client pixels through the crop, accounting for any CSS downscale of
+    // the canvas (`.player-canvas` only shrinks it).
+    const cx = (clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (clientY - rect.top) * (canvas.height / rect.height);
+    const px = span.x + (cx / canvas.width) * span.w;
+    const py = span.y + (cy / canvas.height) * span.h;
+    const slopX = (CONTEXT_HIT_SLOP / canvas.width) * span.w;
+    const slopY = (CONTEXT_HIT_SLOP / canvas.height) * span.h;
+    let best: { id: string; area: number } | null = null;
+    for (const m of this.source.contextMarks?.(item.id, span) ?? []) {
+      const s = m.spans[0];
+      if (!s || s.page !== span.page) continue;
+      if (px < s.x - slopX || px > s.x + s.w + slopX) continue;
+      if (py < s.y - slopY || py > s.y + s.h + slopY) continue;
+      const area = s.w * s.h;
+      if (!best || area <= best.area) best = { id: m.id, area };
+    }
+    return best?.id ?? null;
+  }
+
+  // A click peeks at one grey occlusion, or re-covers it. Session-only state,
+  // cleared on navigation, and independent of the focused card's reveal — so it
+  // works whether the answer is hidden or showing.
+  private contextClick(e: MouseEvent): void {
+    const id = this.contextMarkAt(e.clientX, e.clientY);
+    if (!id) return;
+    if (this.contextRevealed.has(id)) this.contextRevealed.delete(id);
+    else this.contextRevealed.add(id);
+    this.drawMarks();
+  }
+
+  private contextHover(e: PointerEvent): void {
+    const canvas = e.currentTarget as HTMLCanvasElement;
+    canvas.style.cursor = this.contextMarkAt(e.clientX, e.clientY) ? "pointer" : "";
+  }
+
+  // How the occlusions are treated when a crop is composited.
+  //  - `covered`  : solid fills, the question side (on-screen, unrevealed)
+  //  - `revealed` : dashed skeleton, so the answer's spot stays visible
+  //  - `plain`    : no occlusion at all. Used for the clipboard export: an image
+  //                 cannot be revealed on click the way the screen can, so a
+  //                 cover there would just hide the answer behind an opaque box.
+  private paintMarks(
+    canvas: HTMLCanvasElement,
+    item: PlayerItem,
+    span: Span,
+    mode: "covered" | "revealed" | "plain"
+  ): boolean {
+    const base = this.baseCanvas;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx || !base) return false;
 
     // Start from the clean crop so toggling reveal can erase occlusions. The
     // page tone filter is scoped to this drawImage and reset before the marks,
     // so occlusions/highlights are never tinted.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // A skewed frame clips the crop to its quad; the canvas outside stays
+    // transparent. Applied to the page and the marks alike, since the marks lie
+    // within the column the quad outlines.
+    if (item.clip) {
+      ctx.save();
+      this.traceClip(ctx, item.clip, span, canvas);
+      ctx.clip();
+    }
     ctx.filter = this.pageFilter;
     ctx.drawImage(base, 0, 0);
     ctx.filter = "none";
 
     // Neighbouring marks that share the crop are drawn first, flat grey, so the
     // page reads as context without a second answer competing for attention.
-    // They stay covered regardless of reveal: they are not this card's answer.
-    for (const m of this.source.contextMarks?.(item.id, span) ?? []) {
-      const s = m.spans[0];
-      if (!s || s.page !== span.page) continue;
-      const [mx, my, mw, mh] = this.markRect(span, s, canvas);
-      ctx.fillStyle = CONTEXT_COLOR;
-      ctx.fillRect(mx, my, mw, mh);
+    // They are not this card's answer, so they stay covered unless the user
+    // peeks at one (a click, `contextRevealed`). The export skips them with
+    // everything else — they are other cards' covers, and a cover in a still
+    // image only ever hides text.
+    if (mode !== "plain") {
+      for (const m of this.source.contextMarks?.(item.id, span) ?? []) {
+        const s = m.spans[0];
+        if (!s || s.page !== span.page) continue;
+        const [mx, my, mw, mh] = this.markRect(span, s, canvas);
+        if (this.contextRevealed.has(m.id)) {
+          // Peeked: drop the cover so the page text shows, leaving a faint dashed
+          // outline where the occlusion sits.
+          const lw = 1.5;
+          ctx.save();
+          ctx.strokeStyle = "rgba(156, 163, 175, 0.9)";
+          ctx.lineWidth = lw;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(mx + lw / 2, my + lw / 2, Math.max(1, mw - lw), Math.max(1, mh - lw));
+          ctx.restore();
+        } else {
+          ctx.fillStyle = CONTEXT_COLOR;
+          ctx.fillRect(mx, my, mw, mh);
+        }
+      }
     }
 
     // In play mode the player drives reveal, ignoring per-mark revealed state.
@@ -818,7 +992,7 @@ export class Player {
       } else if (m.tags.includes("highlight")) {
         ctx.fillStyle = hexToRgba(m.color ?? "#f5c518", 0.3);
         ctx.fillRect(mx, my, mw, mh);
-      } else if (this.revealed) {
+      } else if (mode === "revealed") {
         // A revealed occlusion leaves a dashed skeleton rather than vanishing,
         // matching the document overlay so the answer's spot stays visible.
         const lw = 1.5;
@@ -828,12 +1002,33 @@ export class Player {
         ctx.setLineDash([5, 4]);
         ctx.strokeRect(mx + lw / 2, my + lw / 2, Math.max(1, mw - lw), Math.max(1, mh - lw));
         ctx.restore();
-      } else {
+      } else if (mode === "covered") {
         // Occlusions cover the answer and clear once revealed.
         ctx.fillStyle = m.color || "#1f2430";
         ctx.fillRect(mx, my, mw, mh);
       }
+      // `plain`: the occlusion is simply not drawn, so the page shows through.
     }
+    if (item.clip) ctx.restore();
+    return true;
+  }
+
+  // Traces a frame quad as a crop-canvas path, mapped from page space through the
+  // same transform a mark's rect uses, so the clip lines up with the marks.
+  private traceClip(
+    ctx: CanvasRenderingContext2D,
+    corners: Corners,
+    span: Span,
+    canvas: HTMLCanvasElement
+  ): void {
+    ctx.beginPath();
+    corners.forEach((c, i) => {
+      const px = ((c.x - span.x) / span.w) * canvas.width;
+      const py = ((c.y - span.y) / span.h) * canvas.height;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.closePath();
   }
 
   destroy(): void {

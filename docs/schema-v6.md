@@ -20,6 +20,8 @@ interface Span {
   x: number; y: number; w: number; h: number; // normalized (0–1) within the page
 }
 
+interface Point { x: number; y: number } // normalized, used by a frame's quad
+
 interface Base {
   id: string;
   spans: Span[];
@@ -29,6 +31,9 @@ interface Base {
 
 interface Box extends Base {
   kind: "box";
+  // Optional free-quad outline for a frame: four page-normalized corners
+  // (TL, TR, BR, BL). Absent = a plain rectangular box.
+  quad?: [Point, Point, Point, Point];
 }
 
 interface Mark extends Base {
@@ -102,7 +107,9 @@ A `Note` of kind `"point"` reads nothing: it is a pin, so it carries its own
   with a small vertical pad above and below.
 - A **frame** is a box tagged `"frame"` — purely a crop mask. It is never a card
   and never carries content. Its job is e.g. to mask a two-column PDF to one
-  column.
+  column. A frame may carry an optional `quad` (four corners) so its crop can be
+  skewed to fit a column that is not axis-aligned; `spans[0]` stays the corners'
+  bounding box, so outline order, containment and crop derivation are unaffected.
 
 ## 4. Derivation — one function
 

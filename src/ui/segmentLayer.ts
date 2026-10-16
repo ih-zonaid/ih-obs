@@ -1,4 +1,4 @@
-import { isAnchor, isBox, roleOf, type Box, type Entity } from "../store/schema";
+import { isAnchor, isBox, roleOf, type Box, type Corners, type Entity, type Span } from "../store/schema";
 import type { Surface } from "../adapters/types";
 import { icon } from "./icons";
 import { scrollIntoContainer, scrollParent } from "./scroll";
@@ -121,6 +121,11 @@ export class SegmentLayer {
         el.style.top = `${span.y * h}px`;
         el.style.width = `${span.w * w}px`;
         el.style.height = `${span.h * h}px`;
+        // A quad frame draws its true outline; its span is only the bounding box.
+        if (box.quad) {
+          el.classList.add("quad");
+          el.appendChild(this.quadPolygon(box.quad, span));
+        }
         const tag = document.createElement("span");
         tag.className = "seg-tag";
         tag.textContent = box.label.trim() || roleOf(box);
@@ -138,6 +143,27 @@ export class SegmentLayer {
         layer.appendChild(el);
       }
     }
+  }
+
+  // A quad frame's outline, drawn as an SVG polygon inside the `.seg-box`
+  // wrapper so the box keeps its select/context-menu behaviour. Points are
+  // relative to the wrapper (the frame's bounding span), in surface pixels.
+  private quadPolygon(corners: Corners, span: Span): SVGSVGElement {
+    const { w, h } = this.size(span.page);
+    const width = span.w * w;
+    const height = span.h * h;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "seg-quad-svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    poly.setAttribute("class", "seg-quad");
+    poly.setAttribute(
+      "points",
+      corners.map((c) => `${(c.x - span.x) * w},${(c.y - span.y) * h}`).join(" ")
+    );
+    svg.appendChild(poly);
+    return svg;
   }
 
   private paintAnchor(box: Box, active: string | null): void {

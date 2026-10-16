@@ -35,6 +35,7 @@ import { kvGet, kvRemove, kvSet } from "../store/kv";
 import {
   anchorOf,
   anchorPage,
+  applyQuad,
   assignOwners,
   buildOutlineTree,
   cardCrop,
@@ -54,23 +55,31 @@ import {
   isInk,
   isMark,
   markKind,
+  moveQuadEdge,
   newMarkId,
   newBoxId,
   newNoteId,
   MARK_PALETTE,
   PAGE_OWNER,
   parseLabel,
+  quadCorners,
   roleOf,
+  setQuadCorner,
   smallestContainingSpan,
+  translateQuad,
   type Box,
   type BoxTag,
   type Card,
+  type CornerIndex,
+  type Corners,
+  type Edge,
   type Entity,
   type Mark,
   type Note,
   type NoteAnchor,
   type NoteTargetKind,
   type OutlineNode,
+  type Point,
   type MarkKind,
   type Span
 } from "../store/schema";
@@ -249,6 +258,10 @@ export class App {
   private notes: Note[] = [];
   private activeId: string | null = null;
   private activeKind: "box" | "mark" = "box";
+  // The active frame's corners captured when a corner drag starts, so Escape /
+  // pointercancel can restore the pre-drag shape (a corner drag mutates the quad
+  // live, unlike a move/resize which is recomputed from `origin`).
+  private quadDragOrigin: Corners | null = null;
   private drawTool: DrawTool | null = null;
   private zoomCtl: ZoomController | null = null;
   private mode: OverlayMode = "none";
@@ -1307,6 +1320,19 @@ export class App {
         void this.persistEntities();
       },
       onCancel: (origin) => this.transformSpan(this.activeId, origin, origin),
+      onCornerPreview: (index, point) => this.previewQuadCorner(index, point),
+      onCornerCommit: (index, point) => {
+        this.previewQuadCorner(index, point);
+        this.quadDragOrigin = null;
+        void this.persistEntities();
+      },
+      onEdgePreview: (edge, dx, dy) => this.previewQuadEdge(edge, dx, dy),
+      onEdgeCommit: (edge, dx, dy) => {
+        this.previewQuadEdge(edge, dx, dy);
+        this.quadDragOrigin = null;
+        void this.persistEntities();
+      },
+      onQuadCancel: () => this.cancelQuadDrag(),
       onClick: () => this.revealActiveMark(),
       onContext: (x, y) => {
         if (!this.activeId) return;
@@ -1323,8 +1349,9 @@ export class App {
 
   // The entity the transform frame should frame. Only the active entity is
   // ever framed — nothing appears on its own. Anchors are move-only (their
-  // width is fixed full-page by construction); every other entity gets all
-  // eight handles.
+  // width is fixed full-page by construction); a frame gets all eight handles —
+  // corners skew it, sides move a whole side in parallel — and every other
+  // entity gets the standard eight-handle resize.
   private transformTarget(): TransformTarget | null {
     if (!this.activeId) return null;
     const span =
@@ -1333,6 +1360,14 @@ export class App {
     if (this.activeKind === "box") {
       const box = this.boxById(this.activeId);
       if (box && isAnchor(box)) return { span, handles: [], axis: "y" };
+      if (box && isFrame(box)) {
+        return {
+          span,
+          handles: ["nw", "n", "ne", "e", "se", "s", "sw", "w"],
+          corners: quadCorners(box),
+          skew: !!box.quad
+        };
+      }
     } else {
       // Ink moves as a whole; resizing a stroke would have to scale its path,
       // which the minimal pen does not support yet.
@@ -1340,6 +1375,43 @@ export class App {
       if (mark && isInk(mark)) return { span, handles: [], axis: "both" };
     }
     return { span, handles: ["nw", "n", "ne", "e", "se", "s", "sw", "w"] };
+  }
+
+  // Live corner pull on the active frame. The pre-drag corners are snapshotted on
+  // the first preview so a cancel can restore them; the bounding span is kept in
+  // sync by setQuadCorner.
+  private previewQuadCorner(index: CornerIndex, point: Point): void {
+    if (this.activeKind !== "box" || !this.activeId) return;
+    const box = this.boxById(this.activeId);
+    if (!box || !isFrame(box)) return;
+    if (!this.quadDragOrigin) this.quadDragOrigin = quadCorners(box).map((c) => ({ ...c })) as Corners;
+    setQuadCorner(box, index, point.x, point.y);
+    this.segLayer?.setData(this.entities);
+    this.transform?.repaint();
+  }
+
+  // Live side pull on the active frame: both corners of the side move by the
+  // delta, so the side travels parallel to itself. Applied from the pre-drag
+  // snapshot each time, so the drag never compounds.
+  private previewQuadEdge(edge: Edge, dx: number, dy: number): void {
+    if (this.activeKind !== "box" || !this.activeId) return;
+    const box = this.boxById(this.activeId);
+    if (!box || !isFrame(box)) return;
+    if (!this.quadDragOrigin) this.quadDragOrigin = quadCorners(box).map((c) => ({ ...c })) as Corners;
+    applyQuad(box, this.quadDragOrigin);
+    moveQuadEdge(box, edge, dx, dy);
+    this.segLayer?.setData(this.entities);
+    this.transform?.repaint();
+  }
+
+  private cancelQuadDrag(): void {
+    const box = this.activeId ? this.boxById(this.activeId) : undefined;
+    const origin = this.quadDragOrigin;
+    this.quadDragOrigin = null;
+    if (!box || !origin) return;
+    applyQuad(box, origin);
+    this.segLayer?.setData(this.entities);
+    this.transform?.repaint();
   }
 
   // Applies a transform result to the active entity. A multi-span entity is
@@ -1351,6 +1423,14 @@ export class App {
     const dy = span.y - origin.y;
     if (dx === 0 && dy === 0 && span.w === origin.w && span.h === origin.h) return;
     const resized = span.w !== origin.w || span.h !== origin.h;
+    // A quad frame moves as a whole: its corners (not the bounding span) are the
+    // source of truth, so translate them and let them re-derive the span.
+    if (isBox(entity) && entity.quad) {
+      if (!resized) translateQuad(entity, dx, dy);
+      this.segLayer?.setData(this.entities);
+      this.overlay?.repaint();
+      return;
+    }
     entity.spans[0] = { ...entity.spans[0], ...span };
     // A moved stroke's points must follow its bounding box.
     if (!resized && isMark(entity) && isInk(entity) && entity.path) {
@@ -1895,6 +1975,9 @@ export class App {
         // The frame bounds the up/down context reveal, so it cannot grow into
         // the neighbouring column. Frame-less cards are unbounded (page edge).
         bounds: frame?.spans[0] ?? null,
+        // A skewed (quad) frame clips the crop to its true outline; a rectangular
+        // frame needs no clip, since `bounds` already is the rectangle.
+        clip: frame?.quad ?? null,
         cue: m.cue
       };
     });
