@@ -167,6 +167,13 @@ body {
      right rail. Widths are custom properties so the resize handles rewrite them
      in one place; the var() fallbacks are the stylesheet defaults. */
   grid-template-columns: var(--left-w, 250px) var(--handle-w, 5px) minmax(0, 1fr) 0 0;
+  /* One row pinned to the workspace's own height. Without this the implicit
+     `auto` row grows to the tallest child — the outline list or the stacked PDF
+     pages — so the viewer and rail stretch past the viewport and their bottom
+     (the PDF scrollbar, the end of the outline) is clipped by overflow:hidden
+     and can never be scrolled into view. minmax(0,1fr) lets the scroll
+     containers inside shrink instead. */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   position: relative;
   overflow: hidden;
