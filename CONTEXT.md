@@ -175,9 +175,12 @@ side agree simply by filtering on the id.
   (`cardCrop`) spans the whole group, play paints every member line, and grading
   buries the siblings (`buryGroup`). Frame/deck membership tests **all** of a
   grouped card's lines (`cardSpans`), not just the card-holding one.
-- **Visual.** Each grouped mark shows a `×N` badge on its left edge and a solid
-  accent bar, distinct from the dashed "attached" outline (grouping is
-  independent of ownership).
+- **Visual.** Each grouped mark is bracketed by a purple bar on its left and
+  right edge, distinct from the dashed "attached" outline (grouping is
+  independent of ownership). The bars are a child element with no text, so they
+  survive reveal (which clears the mark's own background and box-shadow, and
+  owns `outline`) and never cover the line they mark; the group size is only in
+  the mark's tooltip.
 
 ### Ownership rules (the heart of the design)
 

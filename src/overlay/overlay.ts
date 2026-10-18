@@ -855,8 +855,8 @@ export class Overlay {
       // Live ink is re-drawn too, so remove committed stroke paths as well.
       layer.querySelectorAll(".ihobs-ink-layer > path:not(.ihobs-ink-live)").forEach((n) => n.remove());
     }
-    // Group sizes once, so every member can show the same "×N" badge without an
-    // O(n²) scan per mark.
+    // Group sizes once, so every member's tooltip can name the same group size
+    // without an O(n²) scan per mark.
     const groupSizes = new Map<string, number>();
     for (const m of this.marks) {
       if (m.groupId) groupSizes.set(m.groupId, (groupSizes.get(m.groupId) ?? 0) + 1);
@@ -877,7 +877,7 @@ export class Overlay {
       const el = document.createElement("div");
       el.className = `${inflated}${r.revealed ? " revealed" : ""}${
         attached ? " attached" : ""
-      }${grouped ? " grouped" : ""}${this.inspect ? " inspect" : ""}`;
+      }${this.inspect ? " inspect" : ""}`;
       el.dataset.owner = r.owner;
       el.style.left = `${span.x * w}px`;
       el.style.top = `${span.y * h}px`;
@@ -891,14 +891,16 @@ export class Overlay {
         el.style.setProperty("--ih-color", r.color ?? HIGHLIGHT_COLOR);
       }
       el.title = grouped
-        ? "grouped — click reveals the whole group · right-click for options"
+        ? `group ×${groupSizes.get(r.groupId as string) ?? 2} — click reveals the whole group · right-click for options`
         : "click to reveal · right-click for options";
+      // The group cue is a child element, not a background or box-shadow: those
+      // are owned by the reveal rules, and a revealed mark is exactly the state
+      // where the cue has to survive. It carries no text, so it never sits on
+      // the very lines the mark exists to hide and reveal.
       if (grouped) {
-        const badge = document.createElement("span");
-        badge.className = "ihobs-region-group";
-        badge.textContent = `×${groupSizes.get(r.groupId as string) ?? 2}`;
-        badge.title = "reveal group — reveals, recolors and converts as one";
-        el.appendChild(badge);
+        const bar = document.createElement("span");
+        bar.className = "ihobs-region-group";
+        el.appendChild(bar);
       }
       if (this.inspect) {
         const badge = document.createElement("span");
