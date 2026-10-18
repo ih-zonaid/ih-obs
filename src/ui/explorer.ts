@@ -5,6 +5,8 @@ export interface ExplorerHandlers {
   onOpen(path: string): void;
   onTogglePin(path: string): void;
   onExpandedChange(expanded: string[]): void;
+  // Which items a file offers is the app's call, not the tree's.
+  onContextMenu(path: string, x: number, y: number): void;
 }
 
 export class Explorer {
@@ -149,6 +151,10 @@ export class Explorer {
 
     if (this.active === node.path) item.classList.add("active");
     item.addEventListener("click", () => this.handlers.onOpen(node.path));
+    item.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.handlers.onContextMenu(node.path, e.clientX, e.clientY);
+    });
     return item;
   }
 

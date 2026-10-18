@@ -89,7 +89,7 @@ import {
 import { detectInSpan } from "../segment/detect";
 import { toBitmap } from "../segment/layout";
 import { captureSelection, type CapturedSelection } from "../selection/textSelection";
-import { extOf, listTree } from "../vault/tree";
+import { extOf, isPdf, listTree } from "../vault/tree";
 import { splitPath, type FsNode } from "../vault/types";
 import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
@@ -440,7 +440,8 @@ export class App {
     this.explorer = new Explorer(this.shell.explorer, {
       onOpen: (path) => void this.openPath(path),
       onTogglePin: (path) => void this.togglePin(path),
-      onExpandedChange: (expanded) => void this.prefs.setExpanded(expanded)
+      onExpandedChange: (expanded) => void this.prefs.setExpanded(expanded),
+      onContextMenu: (path, x, y) => this.fileMenu(path, x, y)
     });
 
     this.home = new Home(this.shell.viewer, {
@@ -1116,6 +1117,34 @@ export class App {
     } catch {
       return null;
     }
+  }
+
+  // Right-click on an explorer row. Only PDFs have anything to offer for now.
+  private fileMenu(path: string, x: number, y: number): void {
+    if (!isPdf(path)) return;
+    openContextMenu(
+      {
+        title: path,
+        items: [
+          { label: "Open in new tab in Chrome", onSelect: () => void this.openInChrome(path) }
+        ]
+      },
+      x,
+      y
+    );
+  }
+
+  // Hand the file's own bytes to the browser as a blob so Chrome's built-in
+  // PDF viewer renders it. A file handle can't be turned into a URL, and this
+  // app has no server, so the blob is the only way in.
+  private async openInChrome(path: string): Promise<void> {
+    const handle = await this.nodeHandle(path);
+    if (!handle) return;
+    const url = URL.createObjectURL(await handle.getFile());
+    window.open(url, "_blank", "noopener");
+    // The blob must outlive the new tab's fetch of it; this page's own lifetime
+    // is the shortest bound that is always safe.
+    window.addEventListener("pagehide", () => URL.revokeObjectURL(url), { once: true });
   }
 
   async openPath(path: string): Promise<void> {
