@@ -4,10 +4,14 @@ import {
   INK_COLOR,
   INK_WEIGHT,
   PAGE_OWNER,
+  groupMembers,
+  isGrouped,
   isInk,
   markKind,
+  newGroupId,
   newMarkId,
   setMarkKind,
+  uniqueGroupCards,
   type InkPoint,
   type Mark,
   type MarkKind,
@@ -97,8 +101,15 @@ export class Overlay {
   // preview band without waiting for the next pointermove.
   private lastHover: { layer: HTMLElement; x: number; y: number } | null = null;
   // The one uncommitted line draft (normalized span) and its live element.
-  // Nothing is persisted until commitPending assigns it a kind.
-  private pending: { span: Span; el: HTMLElement } | null = null;
+  // Nothing is persisted until commitPending assigns it a kind. `chain` records
+  // whether Shift was held when the draft was swiped, so the group link is
+  // applied at commit time rather than lost when the kind is picked later.
+  private pending: { span: Span; el: HTMLElement; chain: boolean } | null = null;
+  // Reveal-group chain state for the line tool: the group the next Shift-swipe
+  // joins, and the most recent swipe so a first join can pull it in. Shift on a
+  // swipe links it to the previous swipe; a plain swipe starts a fresh chain.
+  private chainId: string | null = null;
+  private chainMarkId: string | null = null;
   // Pen tool: color and stroke width (normalized to page width). Sticky across
   // strokes and pages, like the line tool's band height.
   private inkColor = INK_COLOR;
@@ -340,12 +351,12 @@ export class Overlay {
     if (!p) return;
     p.el.remove();
     this.pending = null;
-    this.commitLine(p.span, kind);
+    this.commitLine(p.span, kind, p.chain);
   }
 
   // Builds a line mark from a span and kind. Shared by commitPending (picker
   // flow) and an immediate commit when the line tool has a default kind.
-  private commitLine(span: Span, kind: MarkKind): void {
+  private commitLine(span: Span, kind: MarkKind, chain = false): void {
     const mark: Mark = {
       kind: "mark",
       id: newMarkId(),
@@ -356,9 +367,41 @@ export class Overlay {
       owner: this.options.ownerFor(span) || PAGE_OWNER,
       revealed: false
     };
+    this.applyChain(mark, chain);
     this.marks.push(mark);
+    uniqueGroupCards(this.marks);
     this.paint();
     this.options.onChange(this.marks);
+  }
+
+  // Shift-chained swipes. A plain swipe ends the chain; a Shift-swipe joins the
+  // current chain. Resolving the group in order:
+  //   1. the chain already in progress (a run of Shift swipes);
+  //   2. the previous swipe's own group, if it already has one — so a Shift
+  //      swipe onto an already-grouped line extends *that* group;
+  //   3. a fresh id that also adopts the previous swipe, which is what makes the
+  //      *first* Shift press group two lines rather than merely name a new one.
+  // `chainMarkId` tracks the last swipe even when it was a plain one, so a Shift
+  // swipe right after it has something to adopt.
+  private applyChain(mark: Mark, chain: boolean): void {
+    const prev = this.chainMarkId ? this.marks.find((m) => m.id === this.chainMarkId) : undefined;
+    if (!chain) {
+      this.chainId = null;
+      this.chainMarkId = mark.id;
+      return;
+    }
+    this.chainId = this.chainId ?? prev?.groupId ?? newGroupId();
+    if (prev && !prev.groupId) prev.groupId = this.chainId;
+    mark.groupId = this.chainId;
+    this.chainMarkId = mark.id;
+  }
+
+  // The id of the last line-tool swipe, whether or not it is already grouped.
+  // "Group with last line" uses it so grouping an existing mark onto the most
+  // recent swipe works even before a chain has started.
+  lastLineId(): string | null {
+    const prev = this.chainMarkId ? this.marks.find((m) => m.id === this.chainMarkId) : undefined;
+    return prev?.id ?? null;
   }
 
   // Builds an ink mark from normalized stroke points. `spans[0]` is the stroke's
@@ -604,9 +647,12 @@ export class Overlay {
     if (this.mode === "line") {
       // With a default kind set, a swipe is committed immediately; otherwise it
       // stays a neutral draft (no tags, no color, not persisted) and the user
-      // picks occlusion vs highlight from its right-click menu.
+      // picks occlusion vs highlight from its right-click menu. Shift is read
+      // here, at the end of the swipe, and carried on the draft so the link
+      // survives until a kind is chosen.
+      const chain = e.shiftKey;
       if (this.lineDefault !== "none") {
-        this.commitLine(span, this.lineDefault);
+        this.commitLine(span, this.lineDefault, chain);
         this.hoverMove(layer, e.clientX, e.clientY);
         return;
       }
@@ -624,7 +670,7 @@ export class Overlay {
         this.options.onPendingContext?.(ev.clientX, ev.clientY);
       });
       layer.appendChild(el);
-      this.pending = { span, el };
+      this.pending = { span, el, chain };
       this.hoverMove(layer, e.clientX, e.clientY);
       return;
     }
@@ -695,21 +741,26 @@ export class Overlay {
   // Flips a mark between occlusion and highlight in place, so a mis-toggled
   // mark can be fixed without deleting and redrawing it. The color is reset to
   // that kind's default, so a converted mark never keeps the other kind's hue.
+  // A grouped mark converts its whole group: the group is one logical answer, so
+  // converting one line of it and not the others would split its appearance.
   setKind(id: string, kind: MarkKind): void {
     const r = this.marks.find((x) => x.id === id);
     if (!r) return;
-    setMarkKind(r, kind);
-    r.color = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
+    for (const m of groupMembers(this.marks, r)) {
+      setMarkKind(m, kind);
+      m.color = kind === "highlight" ? this.lineHighlightColor : this.lineOcclusionColor;
+    }
     this.paint();
     this.options.onChange(this.marks);
   }
 
   // silent: true skips onChange (persist) so a live color-picker drag doesn't
-  // trigger a sidecar write on every intermediate value.
+  // trigger a sidecar write on every intermediate value. A grouped mark recolors
+  // the whole group.
   setColor(id: string, color: string, opts?: { silent?: boolean }): void {
     const r = this.marks.find((x) => x.id === id);
     if (!r) return;
-    r.color = color;
+    for (const m of groupMembers(this.marks, r)) m.color = color;
     this.paint();
     if (!opts?.silent) this.options.onChange(this.marks);
   }
@@ -723,7 +774,61 @@ export class Overlay {
   }
 
   remove(id: string): void {
-    this.marks = this.marks.filter((r) => r.id !== id);
+    const r = this.marks.find((x) => x.id === id);
+    // Removing one line of a group must not silently drop the group's card. If
+    // the removed mark carried it, another member inherits it; if none remains,
+    // the group is gone anyway.
+    if (r?.card && r.groupId) {
+      const heir = this.marks.find((x) => x.id !== id && x.groupId === r.groupId);
+      if (heir && !heir.card) heir.card = { ...r.card };
+    }
+    this.marks = this.marks.filter((x) => x.id !== id);
+    uniqueGroupCards(this.marks);
+    this.paint();
+    this.options.onChange(this.marks);
+  }
+
+  // Removes every mark sharing the id's reveal group — the "one logical answer"
+  // the group represents, so deleting one line of it deletes the answer.
+  removeGroup(id: string): void {
+    const r = this.marks.find((x) => x.id === id);
+    if (!r) return;
+    const ids = new Set((r.groupId ? groupMembers(this.marks, r) : [r]).map((m) => m.id));
+    this.marks = this.marks.filter((m) => !ids.has(m.id));
+    if (r.groupId === this.chainId) {
+      this.chainId = null;
+      this.chainMarkId = null;
+    }
+    this.paint();
+    this.options.onChange(this.marks);
+  }
+
+  // Breaks a reveal group: every member keeps its geometry but loses the shared
+  // id, so the lines become independent again.
+  ungroup(id: string): void {
+    const r = this.marks.find((x) => x.id === id);
+    if (!r?.groupId) return;
+    for (const m of groupMembers(this.marks, r)) delete m.groupId;
+    if (r.groupId === this.chainId) {
+      this.chainId = null;
+      this.chainMarkId = null;
+    }
+    this.paint();
+    this.options.onChange(this.marks);
+  }
+
+  // Merges two marks into one reveal group. If either already has a group, the
+  // other joins it; otherwise a fresh id is minted. Used by "Add to group" from a
+  // mark menu, so groups can be built from existing marks as well as by swipe.
+  groupWith(id: string, otherId: string): void {
+    const r = this.marks.find((x) => x.id === id);
+    const other = this.marks.find((x) => x.id === otherId);
+    if (!r || !other) return;
+    const group = r.groupId ?? other.groupId ?? newGroupId();
+    for (const m of [r, ...groupMembers(this.marks, r), other, ...groupMembers(this.marks, other)]) {
+      m.groupId = group;
+    }
+    uniqueGroupCards(this.marks);
     this.paint();
     this.options.onChange(this.marks);
   }
@@ -750,6 +855,12 @@ export class Overlay {
       // Live ink is re-drawn too, so remove committed stroke paths as well.
       layer.querySelectorAll(".ihobs-ink-layer > path:not(.ihobs-ink-live)").forEach((n) => n.remove());
     }
+    // Group sizes once, so every member can show the same "×N" badge without an
+    // O(n²) scan per mark.
+    const groupSizes = new Map<string, number>();
+    for (const m of this.marks) {
+      if (m.groupId) groupSizes.set(m.groupId, (groupSizes.get(m.groupId) ?? 0) + 1);
+    }
     for (const r of this.marks) {
       const span = r.spans[0];
       if (!span) continue;
@@ -762,10 +873,11 @@ export class Overlay {
       const { w, h } = this.surfaceSize(span.page);
       const inflated = `ihobs-region ${markKind(r)}`;
       const attached = r.owner && r.owner !== PAGE_OWNER;
+      const grouped = isGrouped(this.marks, r);
       const el = document.createElement("div");
       el.className = `${inflated}${r.revealed ? " revealed" : ""}${
         attached ? " attached" : ""
-      }${this.inspect ? " inspect" : ""}`;
+      }${grouped ? " grouped" : ""}${this.inspect ? " inspect" : ""}`;
       el.dataset.owner = r.owner;
       el.style.left = `${span.x * w}px`;
       el.style.top = `${span.y * h}px`;
@@ -778,7 +890,16 @@ export class Overlay {
         // as a translucent tint (multiply in light, screen in dark).
         el.style.setProperty("--ih-color", r.color ?? HIGHLIGHT_COLOR);
       }
-      el.title = "click to reveal · right-click for options";
+      el.title = grouped
+        ? "grouped — click reveals the whole group · right-click for options"
+        : "click to reveal · right-click for options";
+      if (grouped) {
+        const badge = document.createElement("span");
+        badge.className = "ihobs-region-group";
+        badge.textContent = `×${groupSizes.get(r.groupId as string) ?? 2}`;
+        badge.title = "reveal group — reveals, recolors and converts as one";
+        el.appendChild(badge);
+      }
       if (this.inspect) {
         const badge = document.createElement("span");
         badge.className = "ihobs-region-owner";

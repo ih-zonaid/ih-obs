@@ -63,9 +63,11 @@ Two generic primitives; all feature meaning lives in `tags`:
   - `tags`: `"occlusion"` (solid color cover = the hidden answer) or
     `"highlight"` (yellow wash).
   - `owner`: either `PAGE_OWNER` (`"page"`, a free floating mark) or a box id.
-  - `groupId?`: a reveal group — several marks that reveal/hide together as one
-    logical answer (line-tool swipes chained with Shift).
-  - `card?`: presence makes the mark a flashcard (see §3a).
+  - `groupId?`: a reveal group — several marks that reveal/hide, recolor and
+    convert together as one logical answer. Authored by Shift-chaining line-tool
+    swipes (or the mark menu's group actions); see §3d.
+  - `card?`: presence makes the mark a flashcard (see §3a). At most one member
+    of a group holds the card (`uniqueGroupCards`).
 - **`Entity`** = `Box | Mark`, held in one `entities[]` array. Features filter by
   `kind` (`isBox`, `isMark`) and by `tags` (`isAnchor`, `isFrame`, `isCard`).
 - **`Note`** — `{ target, targetKind, body, at?, quote?, page?, createdAt,
@@ -147,6 +149,35 @@ descendants.
 - `question` and `frame` rows keep their legacy meanings (question plays the one
   box; frame plays the cards inside it). `concept`/`questions`/`other`/anchor
   rows play their subtree as a deck.
+
+### 3d. Reveal groups
+
+A **reveal group** is several marks that act as one logical answer: they reveal
+and hide together, recolor together, convert occlusion↔highlight together, and
+share one note (targeted by `targetKind:"group"`, keyed to the `groupId`). It is
+a plain shared `groupId` — **no group entity**, so the read side and the write
+side agree simply by filtering on the id.
+
+- **Authoring.** With the line tool armed, hold **Shift** on a swipe to link it
+  to the previous swipe; the *first* Shift press mints a `groupId` and adopts the
+  previous line, so two swipes are one group without a third click. A plain swipe
+  ends the chain. The mark menu can also group two existing marks (**Group with
+  selected …** / **Group with last line**), dissolve a group (**Ungroup**), or
+  delete it whole (**Remove whole group**). These are what make a mis-grouped
+  line fixable.
+- **Broadcast.** `reveal`, `setKind`, `setColor` and `remove` fan out to every
+  member (`groupMembers` in `src/store/schema.ts`). Removing one member hands the
+  card to a survivor if it carried it; the group's note survives until the group
+  does.
+- **Cards.** A group is one answer, so it is **one card**: at most one member
+  holds `card` (`uniqueGroupCards`, enforced on load, on every group change, and
+  before every write). Making a different member a card moves it there. Its crop
+  (`cardCrop`) spans the whole group, play paints every member line, and grading
+  buries the siblings (`buryGroup`). Frame/deck membership tests **all** of a
+  grouped card's lines (`cardSpans`), not just the card-holding one.
+- **Visual.** Each grouped mark shows a `×N` badge on its left edge and a solid
+  accent bar, distinct from the dashed "attached" outline (grouping is
+  independent of ownership).
 
 ### Ownership rules (the heart of the design)
 

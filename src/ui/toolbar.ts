@@ -170,7 +170,7 @@ export class Toolbar {
     );
     const line = this.iconCtrl(
       "line-band",
-      "line tool: swipe sideways to mark a line — [ / ] resizes the band; right-click for options",
+      "line tool: swipe sideways to mark a line — [ / ] resizes the band; hold Shift on a swipe to group lines as one answer; right-click for options",
       { action: "line", label: "line tool", options: true },
       () => this.setMode("line")
     );

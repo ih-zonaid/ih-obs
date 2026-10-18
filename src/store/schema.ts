@@ -280,6 +280,10 @@ export function newMarkId(): string {
   return uid("m");
 }
 
+export function newGroupId(): string {
+  return uid("g");
+}
+
 export function newBoxId(): string {
   return uid("s");
 }
@@ -528,14 +532,57 @@ export function spanOf(entities: Entity[], id: string): Span | null {
   return entities.find((e) => e.id === id)?.spans[0] ?? null;
 }
 
-// Full page width, the mark's vertical extent on its first page. The fallback
-// context for a card when no context box is assigned. No vertical pad: the band
-// is exactly the marked line, so the player's up/down controls are the only way
-// context is added (a fixed pad cannot know how tall a text line is).
-export function band(mark: Mark): Span {
+// ---- Reveal groups ---------------------------------------------------------
+//
+// A reveal group is several marks that reveal, hide, recolor and convert as one
+// logical answer — the line tool's Shift-chained swipes. It is a plain id shared
+// by `Mark.groupId`; there is no group entity, so the read side (reveal, note,
+// bury) and the write side agree simply by filtering on the shared id.
+
+/** The mark's group siblings, including itself. A lone mark yields `[mark]`. */
+export function groupMembers(marks: Mark[], mark: Mark): Mark[] {
+  if (!mark.groupId) return [mark];
+  return marks.filter((m) => m.groupId === mark.groupId);
+}
+
+/** True when the mark shares its `groupId` with at least one other mark. */
+export function isGrouped(marks: Mark[], mark: Mark): boolean {
+  return !!mark.groupId && marks.some((m) => m !== mark && m.groupId === mark.groupId);
+}
+
+// A reveal group is ONE logical answer, so it is one card. `card` is authored
+// per mark, but when several members end up cards (a mark that was already a
+// card then gets grouped), exactly one keeps it — the rest are cleared. Called
+// on load and before every write so the invariant holds no matter which path
+// (Shift-chain, merge, "Make card") created the overlap.
+//
+// The surviving member is the first in list order *that already has a card*;
+// only when none does is the flag simply left where it is. This matters because
+// the alternative — always keeping the first member — would silently drop a card
+// when the card holder happens to be listed second.
+export function uniqueGroupCards(marks: Mark[]): void {
+  const lead = new Map<string, Mark>();
+  for (const m of marks) {
+    if (!m.groupId || !m.card) continue;
+    if (!lead.has(m.groupId)) lead.set(m.groupId, m);
+  }
+  for (const m of marks) {
+    if (!m.groupId || !m.card) continue;
+    if (lead.get(m.groupId) !== m) delete m.card;
+  }
+}
+
+// Full page width, the marks' vertical extent on the first mark's page. The
+// fallback context for a card when no context box is assigned. No vertical pad:
+// the band is exactly the marked line(s), so the player's up/down controls are
+// the only way context is added (a fixed pad cannot know how tall a text line
+// is). Pass every span the band should cover — for a grouped card that is the
+// whole group, so one card asks for all the lines of one answer at once.
+export function band(mark: Mark, spans: Span[] = mark.spans): Span {
   const first = mark.spans[0];
   if (!first) return { page: 0, x: 0, y: 0, w: 1, h: 0 };
-  const same = mark.spans.filter((s) => s.page === first.page);
+  const same = spans.filter((s) => s.page === first.page);
+  if (!same.length) return { page: first.page, x: 0, y: first.y, w: 1, h: first.h };
   const y0 = Math.min(...same.map((s) => s.y));
   const y1 = Math.max(...same.map((s) => s.y + s.h));
   return {
@@ -548,10 +595,14 @@ export function band(mark: Mark): Span {
 }
 
 // The single card-crop derivation. Outline, player and any inspector must call
-// this rather than re-deriving it.
+// this rather than re-deriving it. A grouped card spans the whole group, so one
+// card covers every line of a multi-line answer.
 export function cardCrop(mark: Mark, entities: Entity[]): Span {
+  const marks = entities.filter(isMark);
+  const members = groupMembers(marks, mark);
+  const spans = members.length > 1 ? members.flatMap((m) => m.spans) : mark.spans;
   const contextId = mark.card?.context;
-  const base = contextId ? spanOf(entities, contextId) ?? band(mark) : band(mark);
+  const base = contextId ? spanOf(entities, contextId) ?? band(mark, spans) : band(mark, spans);
   const frameId = mark.card?.frame;
   const frame = frameId ? spanOf(entities, frameId) : null;
   return frame ? intersect(base, frame) : base;

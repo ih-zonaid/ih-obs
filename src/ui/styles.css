@@ -697,6 +697,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ihobs-region.attached { outline: 1.5px dashed rgba(122, 162, 247, 0.75); outline-offset: 1px; }
 .ihobs-region.inspect { outline: 1.5px solid #ff9e64; outline-offset: 1px; }
 .ihobs-region.inspect.revealed { opacity: 0.35; }
+/* A mark in a reveal group: a small count badge on the left edge shows the lines
+   reveal/recolor/convert together, and a solid accent bar joins them visually
+   without the dashed "attached" outline (grouping is independent of ownership). */
+.ihobs-region.grouped { box-shadow: inset 2px 0 0 rgba(187, 154, 247, 0.95); }
+.ihobs-region-group {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 13px;
+  background: #bb9af7;
+  color: #0b0d10;
+  border-radius: 3px 0 4px 0;
+  pointer-events: none;
+  z-index: 2;
+}
 .ihobs-region-owner {
   position: absolute;
   top: 0;

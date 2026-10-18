@@ -46,12 +46,14 @@ import {
   containsMark,
   containsSpan,
   frames,
+  groupMembers,
   intersect,
   isAnchor,
   isBox,
   isCard,
   isContainer,
   isFrame,
+  isGrouped,
   isInk,
   isMark,
   markKind,
@@ -67,6 +69,7 @@ import {
   setQuadCorner,
   smallestContainingSpan,
   translateQuad,
+  uniqueGroupCards,
   type Box,
   type BoxTag,
   type Card,
@@ -1264,6 +1267,9 @@ export class App {
     const marks = model.entities.filter(isMark);
     const boxes = model.entities.filter(isBox);
     assignOwners(marks, boxes);
+    // A group is one answer, hence one card; enforce it on load so a sidecar
+    // written before this rule (or by hand) cannot leave siblings as cards too.
+    uniqueGroupCards(marks);
     // Both fields land before the overlay exists: it paints at construction, and
     // its pins are read back out of `notes` (notePins) rather than handed in.
     this.entities = model.entities;
@@ -1695,6 +1701,9 @@ export class App {
     const kindLabel = ink ? "Ink" : markKind(mark) === "highlight" ? "Highlight" : "Occlusion";
     const ownerBox = mark.owner !== PAGE_OWNER ? this.boxById(mark.owner) : undefined;
     const ownerName = ownerBox ? this.boxText(ownerBox) : "page";
+    const grouped = isGrouped(this.marks(), mark);
+    const groupCount = mark.groupId ? groupMembers(this.marks(), mark).length : 1;
+    const groupHint = grouped ? `reveals with ${groupCount - 1} other${groupCount - 1 === 1 ? "" : "s"}` : "treat as one";
     const items: ContextMenuEntry[] = [
       {
         label: "Select / transform",
@@ -1715,10 +1724,45 @@ export class App {
         onSelect: () => this.openCueEditor(id, { x: clientX, y: clientY })
       }
     ];
+    // Grouping: a plain mark can join the last swipe's group (the fast path) or
+    // merge with the currently selected mark; a grouped mark can leave or be
+    // dissolved. These are what make a mis-grouped line fixable.
+    if (grouped) {
+      items.push({
+        label: "Remove whole group",
+        hint: `${groupCount} lines`,
+        danger: true,
+        onSelect: () => void this.removeMarkGroup(id)
+      });
+      items.push({
+        label: "Ungroup these lines",
+        hint: groupHint,
+        onSelect: () => void this.ungroupMark(id)
+      });
+    } else {
+      const selected = this.activeKind === "mark" && this.activeId && this.activeId !== id ? this.markById(this.activeId) : undefined;
+      if (selected) {
+        items.push({
+          label: `Group with selected ${this.markKindWord(selected)}`,
+          hint: "one answer",
+          onSelect: () => void this.groupMarks(id, selected.id)
+        });
+      }
+      const last = this.overlay?.lastLineId();
+      items.push({
+        label: "Group with last line",
+        hint: "same as shift-swipe",
+        disabled: !last || last === id,
+        onSelect: () => {
+          if (last) void this.groupMarks(id, last);
+        }
+      });
+    }
     // Ink is a stroke, not a cover; it cannot be flipped to occlusion/highlight.
     if (!ink) {
       items.push({
         label: markKind(mark) === "occlusion" ? "Convert to highlight" : "Convert to occlusion",
+        hint: grouped ? "whole group" : undefined,
         onSelect: () => {
           this.overlay?.setKind(id, markKind(mark) === "occlusion" ? "highlight" : "occlusion");
           void this.persist();
@@ -1790,7 +1834,7 @@ export class App {
     // Ink is not an answer surface, so it cannot become a flashcard.
     if (!ink) items.push("separator", ...this.cardMenuItems(mark));
     items.push({
-      label: "Remove",
+      label: grouped ? "Remove this line only" : "Remove",
       danger: true,
       onSelect: () => {
         this.overlay?.remove(id);
@@ -1803,51 +1847,63 @@ export class App {
 
   // ---- Cards ------------------------------------------------------------
 
+  // A short noun for a mark's kind, for menu labels ("Group with selected
+  // highlight"). Ink is included for completeness though card grouping never
+  // reaches it.
+  private markKindWord(mark: Mark): string {
+    if (isInk(mark)) return "ink";
+    return markKind(mark) === "highlight" ? "highlight" : "occlusion";
+  }
+
   // A mark becomes a flashcard only when the user says so; there is no
   // automatic promotion. The `card` object holds explicit box ids: a context
   // (question side) and a frame (crop clip).
   private cardMenuItems(mark: Mark): ContextMenuEntry[] {
     const items: ContextMenuEntry[] = [];
-    if (!mark.card) {
+    // A group holds one card, on its lead member. The menu is opened from any
+    // member, so it reads and edits the group's card, not just this mark's.
+    const grouped = isGrouped(this.marks(), mark);
+    const cardHolder = grouped ? (groupMembers(this.marks(), mark).find(isCard) ?? mark) : mark;
+    if (!cardHolder.card) {
       items.push({
-        label: "Make card",
+        label: grouped ? "Make this group a card" : "Make card",
         hint: "flashcard",
         onSelect: () => {
-          this.setCard(mark.id, {});
+          this.setCard(cardHolder.id, {});
           this.refreshOutline();
         }
       });
       return items;
     }
 
-    const contextName = mark.card.context ? this.ownerLabel(mark.card.context) : "band (default)";
-    const frameName = mark.card.frame ? this.ownerLabel(mark.card.frame) : "none";
+    const contextName = cardHolder.card.context ? this.ownerLabel(cardHolder.card.context) : "band (default)";
+    const frameName = cardHolder.card.frame ? this.ownerLabel(cardHolder.card.frame) : "none";
     items.push({ label: `Card context: ${contextName}`, disabled: true, onSelect: () => undefined });
     items.push({
       label: "Clear context",
-      disabled: !mark.card.context,
-      onSelect: () => this.setCardContext(mark.id, null)
+      disabled: !cardHolder.card.context,
+      onSelect: () => this.setCardContext(cardHolder.id, null)
     });
     const selected = this.selectedBox();
     if (selected) {
       items.push({
         label: `Use selected "${this.boxText(selected)}" as context`,
-        onSelect: () => this.setCardContext(mark.id, selected.id)
+        onSelect: () => this.setCardContext(cardHolder.id, selected.id)
       });
     }
 
     items.push({ label: `Card frame: ${frameName}`, disabled: true, onSelect: () => undefined });
     items.push({
       label: "Clear frame",
-      disabled: !mark.card.frame,
-      onSelect: () => this.setCardContext(mark.id, undefined, null)
+      disabled: !cardHolder.card.frame,
+      onSelect: () => this.setCardContext(cardHolder.id, undefined, null)
     });
     const frameBoxes = frames(this.boxes());
     for (const f of frameBoxes) {
-      if (f.id === mark.card.frame) continue;
+      if (f.id === cardHolder.card.frame) continue;
       items.push({
         label: `Frame with "${this.boxText(f)}"`,
-        onSelect: () => this.setCardContext(mark.id, undefined, f.id)
+        onSelect: () => this.setCardContext(cardHolder.id, undefined, f.id)
       });
     }
 
@@ -1855,12 +1911,12 @@ export class App {
     items.push({
       label: "Open in play…",
       hint: "this card",
-      onSelect: () => this.playCards([mark])
+      onSelect: () => this.playCards([cardHolder])
     });
     items.push({
       label: "Remove card",
       danger: true,
-      onSelect: () => this.setCard(mark.id, null)
+      onSelect: () => this.setCard(cardHolder.id, null)
     });
     return items;
   }
@@ -1900,6 +1956,16 @@ export class App {
     if (!mark) return;
     if (card) mark.card = card;
     else delete mark.card;
+    // A group is one answer, so it is one card. `uniqueGroupCards` keeps the
+    // first member's card, so when the user makes a *different* member a card
+    // the explicit choice has to win: clear the siblings first, then let the
+    // backstop below catch any leftover.
+    if (card && mark.groupId) {
+      for (const m of groupMembers(this.marks(), mark)) {
+        if (m.id !== markId) delete m.card;
+      }
+    }
+    uniqueGroupCards(this.marks());
     this.overlay?.repaint();
     void this.persist();
     // A mark that is no longer a card has no schedule to keep. The mark itself
@@ -2058,10 +2124,11 @@ export class App {
   /** Marks that reveal together with this card, for bury-siblings. */
   private siblingCardIds(id: string): string[] {
     const mark = this.markById(id);
-    const group = mark?.groupId;
-    if (!group) return [];
-    return this.marks()
-      .filter((m) => m.id !== id && isCard(m) && m.groupId === group)
+    if (!mark?.groupId) return [];
+    // Every other member of the group, regardless of which one holds the card:
+    // the group is the answer, so none of its lines should be asked separately.
+    return groupMembers(this.marks(), mark)
+      .filter((m) => m.id !== id)
       .map((m) => m.id);
   }
 
@@ -2114,10 +2181,14 @@ export class App {
       const span = box.spans[0];
       return this.cards().filter((m) => {
         if (m.card?.frame) return m.card.frame === box.id;
-        return span ? m.spans.some((s) => containsSpan(box, s)) : false;
+        return span ? this.cardSpans(m).some((s) => containsSpan(box, s)) : false;
       });
     }
-    return this.marksForBox(box.id).filter(isCard) as Mark[];
+    // A grouped card counts wherever any of its lines is, not only where the
+    // card-holding member is: the group is one answer, and its lines can straddle
+    // a question boundary.
+    const ids = new Set(this.marksForBox(box.id).map((m) => m.id));
+    return this.cards().filter((m) => groupMembers(this.marks(), m).some((g) => ids.has(g.id)));
   }
 
   // Cards reachable from no box at all: page-scoped marks, and marks whose only
@@ -2920,6 +2991,81 @@ export class App {
     await this.store.saveEntities(this.currentPath, this.view.kind, this.entities);
   }
 
+  // ---- Reveal groups ----------------------------------------------------
+
+  // Merges two marks into one reveal group from the mark menu (the Shift-swipe
+  // is the fast path; this is how groups are built or fixed from existing marks).
+  // Each mark may already carry its own note keyed to a mark id; the group keeps
+  // one note keyed to the group id, so per-mark notes are folded into it — the
+  // bodies joined, never dropped — and the per-mark rows removed.
+  private async groupMarks(id: string, otherId: string): Promise<void> {
+    const a = this.markById(id);
+    const b = this.markById(otherId);
+    if (!a || !b || a.id === b.id) return;
+    this.overlay?.groupWith(id, otherId);
+    const group = this.markById(id)?.groupId;
+    if (!group) return;
+    const members = new Set(groupMembers(this.marks(), a).map((m) => m.id));
+    const memberNotes = this.notes.filter((n) => n.targetKind === "mark" && members.has(n.target));
+    if (memberNotes.length) {
+      const groupNote = this.notes.find((n) => n.targetKind === "group" && n.target === group);
+      const joined = [groupNote?.body, ...memberNotes.map((n) => n.body)].filter(Boolean).join("\n\n");
+      this.notes = this.notes.filter((n) => n !== groupNote && !memberNotes.includes(n));
+      const now = Date.now();
+      this.notes.push({
+        id: groupNote?.id ?? newNoteId(),
+        target: group,
+        targetKind: "group",
+        body: joined,
+        quote: groupNote?.quote ?? memberNotes[0].quote,
+        page: groupNote?.page ?? memberNotes[0].page,
+        createdAt: groupNote?.createdAt ?? now,
+        updatedAt: now
+      });
+    }
+    void this.persist();
+    await this.persistNotes();
+    this.refreshNotes();
+    this.refreshOutline();
+  }
+
+  // Dissolves a group but keeps its lines. The group carried one note (keyed by
+  // the group id); it is re-homed onto the member the user right-clicked, so the
+  // note the group represented is not orphaned by leaving the group.
+  private async ungroupMark(id: string): Promise<void> {
+    const mark = this.markById(id);
+    const group = mark?.groupId;
+    if (!mark || !group) return;
+    const note = this.notes.find((n) => n.targetKind === "group" && n.target === group);
+    this.overlay?.ungroup(id);
+    if (note) {
+      note.target = mark.id;
+      note.targetKind = "mark";
+      note.updatedAt = Date.now();
+    }
+    this.syncMarksFromOverlay();
+    void this.persist();
+    if (note) await this.persistNotes();
+    this.refreshNotes();
+    this.refreshOutline();
+  }
+
+  // Deletes every line of a group. The group's note (keyed by the group id) has
+  // no target once the lines are gone, so it goes too.
+  private async removeMarkGroup(id: string): Promise<void> {
+    const mark = this.markById(id);
+    if (!mark?.groupId) return;
+    const group = mark.groupId;
+    const ids = groupMembers(this.marks(), mark).map((m) => m.id);
+    this.overlay?.removeGroup(id);
+    this.notes = this.notes.filter((n) => !(n.targetKind === "group" && n.target === group));
+    void this.persist();
+    void this.dropReviewRows(ids);
+    await this.persistNotes();
+    this.refreshNotes();
+    this.refreshOutline();
+  }
+
   private async loadPageImage(page: number, scale: number): Promise<PageImage | null> {
     if (!this.view?.getPageImages) return null;
     const images = await this.view.getPageImages([page], scale);
@@ -3137,10 +3283,13 @@ export class App {
 
   // Play-item id → marks to paint. Question play passes a box id (use the
   // containment rule below); card play passes a mark id (paint just that card,
-  // so a sibling mark sharing the crop does not double-cover it).
+  // so a sibling mark sharing the crop does not double-cover it). A grouped card
+  // paints every line of its group: the group is one answer, and the crop
+  // (cardCrop) already spans it, so the lines have to come along or revealing
+  // the card would leave its other lines covered.
   private marksForPlayerItem(id: string): Mark[] {
     const mark = this.markById(id);
-    if (mark && isCard(mark)) return [mark];
+    if (mark && isCard(mark)) return groupMembers(this.marks(), mark);
     return this.marksForBox(id);
   }
 
@@ -3183,8 +3332,11 @@ export class App {
   private contextMarksForCard(id: string, crop: Span): Mark[] {
     const card = this.markById(id);
     if (!card || !this.liveFrameIdOf(card)) return [];
+    // The card's own group members are its answer, painted in full by
+    // marksForPlayerItem; greying them as "context" would double-draw them.
+    const own = new Set(groupMembers(this.marks(), card).map((m) => m.id));
     return this.marks().filter((m) => {
-      if (m.id === id || !m.tags.includes("occlusion")) return false;
+      if (own.has(m.id) || !m.tags.includes("occlusion")) return false;
       const s = m.spans[0];
       if (!s || s.page !== crop.page) return false;
       const hit = intersect(crop, s);
@@ -3218,6 +3370,13 @@ export class App {
     });
   }
 
+  // A card's spans, following its reveal group: a grouped card is one answer, so
+  // every member line counts for containment/frame-membership, not just the lead
+  // mark's own span.
+  private cardSpans(mark: Mark): Span[] {
+    return groupMembers(this.marks(), mark).flatMap((m) => m.spans);
+  }
+
   // Opens the one-item-at-a-time player. A selected frame plays the cards
   // inside it; otherwise the scope is the selected questions container's
   // descendants, a single question, or all questions.
@@ -3236,7 +3395,7 @@ export class App {
         // No explicit frame: the card belongs to the frame that contains the
         // mark itself. Testing the derived crop would fail for the default
         // full-width band, which never fits inside a column frame.
-        return frameSpan ? m.spans.some((s) => containsSpan(picked, s)) : false;
+        return frameSpan ? this.cardSpans(m).some((s) => containsSpan(picked, s)) : false;
       });
       if (!cards.length) {
         window.alert(`No cards in "${this.boxText(picked)}". Make a mark a card first.`);
@@ -3349,7 +3508,9 @@ export class App {
   // additions inside the overlay are what actually get written.
   private syncMarksFromOverlay(): void {
     if (!this.overlay) return;
-    this.entities = [...this.entities.filter(isBox), ...this.overlay.getMarks()];
+    const marks = this.overlay.getMarks();
+    uniqueGroupCards(marks);
+    this.entities = [...this.entities.filter(isBox), ...marks];
   }
 
   private teardown(): void {

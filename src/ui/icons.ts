@@ -107,6 +107,9 @@ const ICONS = {
     filled: true
   },
   layers: { body: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>' },
+  link: {
+    body: '<path d="M9.5 14.5 14.5 9.5"/><path d="M11 6.5 12.7 4.8a3.5 3.5 0 0 1 5 5L16 11.5"/><path d="M13 17.5l-1.7 1.7a3.5 3.5 0 0 1-5-5L8 12.5"/>'
+  },
   pin: { body: '<path d="M9 3h6l-1.5 6 3 3.5V14H7.5v-1.5l3-3.5z"/><path d="M12 14v7"/>' },
   "file-text": {
     body: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 13h6"/><path d="M9 17h6"/>'
