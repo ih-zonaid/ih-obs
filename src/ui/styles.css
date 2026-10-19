@@ -1228,9 +1228,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .outline-row:hover .outline-play, .outline-row.active .outline-play { opacity: 0.85; }
 .outline-play.due { color: var(--accent); opacity: 1; }
-.outline-del { flex: 0 0 auto; padding: 0 4px; opacity: 0; }
-.outline-row:hover .outline-del, .outline-row.active .outline-del { opacity: 0.75; }
-.outline-del:hover { color: var(--hl); opacity: 1; }
 .outline-play:hover { color: #9ece6a; opacity: 1; background: var(--bg); }
 /* The synthetic ungrouped deck row; distinct from real boxes. */
 .outline-row.loose .outline-name { color: var(--fg-dim); font-style: italic; }
@@ -2034,9 +2031,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 @media (hover: none) {
   .explorer-star { opacity: 0.7; }
   .note-row-actions { opacity: 1; }
-  .outline-del,
   .outline-play { opacity: 0.6; }
-  .outline-row.active .outline-del,
   .outline-row.active .outline-play { opacity: 0.85; }
 }
 

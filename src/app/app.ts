@@ -143,6 +143,12 @@ function findNode(nodes: OutlineNode[], id: string): OutlineNode | null {
   return null;
 }
 
+// "a", "a and b", "a, b and c" — for prose lists in prompts and menus.
+function joinPhrase(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 // The explorer/palette tree for a single-file entry: one leaf, no folder walk.
 // The explorer, quick-open and the bookmark filter all render off this tree, so
 // giving them the document keeps those surfaces working without special cases.
@@ -464,7 +470,7 @@ export class App {
     this.outline = new Outline(this.shell.outline, {
       onSelect: (id, kind) => this.selectEntry(id, kind),
       onLabel: (id, label) => void this.setLabel(id, label),
-      onDelete: (id) => void this.deleteEntry(id),
+      onContext: (id, x, y) => this.openEntryMenu(id, "box", x, y),
       onTool: (tool) => this.setDrawTool(tool),
       onAutoSegment: () => void this.runSegmentation(),
       onSplitApply: () => void this.applySplit(),
@@ -2985,9 +2991,60 @@ export class App {
     await this.persistEntities();
   }
 
+  // Boxes nested beneath this one in the outline tree, whole subtree. Nesting is
+  // derived from geometry or heading level, not stored, so deleting a parent
+  // leaves these alive but re-nested: content the user still wants to hear about.
+  private nestedBoxCount(id: string): number {
+    const node = findNode(buildOutlineTree(this.entities), id);
+    if (!node) return 0;
+    const size = (n: OutlineNode): number => 1 + n.children.reduce((total, c) => total + size(c), 0);
+    return size(node) - 1;
+  }
+
+  // What a delete would cost, phrased as the question to put to the user. `null`
+  // means the entry holds nothing, so it can go without asking.
+  //
+  // Only two things are truly lost: the entry's own notes, and any card that
+  // named a box as its context/frame — those references are never re-pointed, so
+  // the card silently falls back to a full-width band. The marks beneath a box
+  // survive as page-scoped cards, and nested boxes survive re-nested, so the
+  // prompt says so rather than implying they go too.
+  private deleteWarning(id: string): string | null {
+    const box = this.boxById(id);
+    if (box) {
+      const marks = this.marksForBox(id).length;
+      const nested = this.nestedBoxCount(id);
+      const notes = this.notes.filter((n) => n.target === id).length;
+      const used = this.marks().filter((m) => m.card?.context === id || m.card?.frame === id).length;
+      if (!marks && !nested && !notes && !used) return null;
+      const parts: string[] = [];
+      if (marks) {
+        parts.push(
+          `${marks} mark${marks === 1 ? "" : "s"} beneath it ${marks === 1 ? "falls" : "fall"} back to Ungrouped`
+        );
+      }
+      if (nested) parts.push(`${nested} nested box${nested === 1 ? " stays" : "es stay"} put`);
+      if (notes) parts.push(`${notes} note${notes === 1 ? "" : "s"} on it will be removed`);
+      if (used) parts.push(`${used} card${used === 1 ? "" : "s"} reference it as context or frame`);
+      return `Delete "${this.boxText(box)}"? ${joinPhrase(parts)}.`;
+    }
+
+    const mark = this.markById(id);
+    if (!mark) return null;
+    const parts: string[] = [];
+    if (isCard(mark)) parts.push("card");
+    if (mark.cue?.trim()) parts.push("cue");
+    if (isGrouped(this.marks(), mark)) parts.push("link to its reveal group");
+    if (this.notes.some((n) => n.target === id)) parts.push("note");
+    if (!parts.length) return null;
+    return `Delete this mark? Its ${joinPhrase(parts)} will be removed with it.`;
+  }
+
   private async deleteEntry(id: string): Promise<void> {
     const entry = this.entities.find((e) => e.id === id);
     if (!entry) return;
+    const warning = this.deleteWarning(id);
+    if (warning && !window.confirm(warning)) return;
     this.entities = this.entities.filter((e) => e.id !== id);
     if (this.activeId === id) this.activeId = null;
     // Notes anchored to the deleted entry go with it, so none dangle.

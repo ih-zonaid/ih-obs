@@ -32,7 +32,9 @@ const OUTLINE_ICONS: Record<string, IconName> = {
 export interface OutlineHandlers {
   onSelect(id: string, kind: "box" | "mark"): void;
   onLabel(id: string, label: string): void;
-  onDelete(id: string): void;
+  // Right-click on a row. The app owns the entry menu (rename, notes, delete),
+  // so the panel itself carries no destructive button.
+  onContext(id: string, x: number, y: number): void;
   onTool(tool: DrawTool | null): void;
   onAutoSegment(): void;
   onSplitApply(): void;
@@ -331,7 +333,7 @@ export class Outline {
     const text = node.text.trim();
     name.textContent = text || (isMarker ? "anchor" : "untitled");
     name.classList.toggle("untitled", !text);
-    name.title = "click to select · double-click to edit";
+    name.title = "click to select · double-click to edit · right-click for actions";
     name.addEventListener("dblclick", (ev) => {
       ev.stopPropagation();
       this.beginEdit(node.id);
@@ -386,18 +388,6 @@ export class Outline {
     page.textContent = `p${node.page + 1}`;
     row.appendChild(page);
 
-    const del = document.createElement("span");
-    del.className = "outline-del";
-    del.appendChild(icon("trash", 12));
-    del.title = isMarker ? "delete anchor" : "delete box";
-    del.setAttribute("role", "button");
-    del.setAttribute("aria-label", del.title);
-    del.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      this.handlers.onDelete(node.id);
-    });
-    row.appendChild(del);
-
     // Every row can play its subtree's cards, so every row gets a play button.
     // Rows with nothing under them still show it (dimmed) rather than shifting
     // the layout as cards are added; the tooltip says so.
@@ -414,9 +404,14 @@ export class Outline {
       ev.stopPropagation();
       this.handlers.onPlay(node.id, scope);
     });
-    row.insertBefore(play, del);
+    row.appendChild(play);
 
     row.addEventListener("click", () => this.handlers.onSelect(node.id, "box"));
+    row.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.handlers.onContext(node.id, ev.clientX, ev.clientY);
+    });
     this.rows.set(node.id, row);
     return row;
   }
