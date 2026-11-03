@@ -95,7 +95,7 @@ import { openContextMenu, type ContextMenuEntry } from "../ui/contextMenu";
 import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { icon } from "../ui/icons";
-import { Outline, UNGROUPED_DECK } from "../ui/outline";
+import { Outline, looseDeckId, looseNodeId } from "../ui/outline";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
 import { hideNotePreview, openNoteEditor, showNotePreview } from "../ui/notePopover";
 import { Palette } from "../ui/palette";
@@ -1312,6 +1312,7 @@ export class App {
     const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
+      onCardOpen: (id) => this.openCardModal(id),
       onPendingContext: (x, y) => this.openPendingLineMenu(x, y),
       onLineContext: (x, y) => this.openLineSettings(x, y),
       ownerFor: (geom) => this.resolveOwner(geom),
@@ -2048,13 +2049,18 @@ export class App {
   }
 
   // Plays an explicit list of card marks, cropping each by its derived card
-  // crop. Order is document position (page, then y).
-  private playCards(marks: Mark[]): void {
+  // crop. Order is document position (page, then y). `allowUncarded` lets the
+  // Alt+click modal open a mark that is not a card yet — grading it there is
+  // what makes it one; `revealed` opens straight onto the grade row.
+  private playCards(
+    marks: Mark[],
+    opts: { allowUncarded?: boolean; revealed?: boolean } = {}
+  ): void {
     if (!this.view?.getPageImages) {
       window.alert("Play mode supports PDFs.");
       return;
     }
-    const cards = marks.filter(isCard);
+    const cards = opts.allowUncarded ? marks : marks.filter(isCard);
     if (!cards.length) {
       window.alert("No cards in this scope. Make a mark a card first.");
       return;
@@ -2082,7 +2088,18 @@ export class App {
         cue: m.cue
       };
     });
-    this.player.start(this.reviewOrder(items));
+    this.player.start(this.reviewOrder(items), opts.revealed ?? false);
+  }
+
+  // Alt+click: open one mark in the player without turning it into a card.
+  // Grading there commits the card; closing without a grade changes nothing.
+  // A grouped mark opens the group's existing card when it has one, so the
+  // sitting never asks the same answer under a different member.
+  private openCardModal(id: string): void {
+    const mark = this.markById(id);
+    if (!mark || isInk(mark)) return;
+    const holder = groupMembers(this.marks(), mark).find(isCard) ?? mark;
+    this.playCards([holder], { allowUncarded: true, revealed: true });
   }
 
   /**
@@ -2143,10 +2160,10 @@ export class App {
     );
   }
 
-  /** Grade-button labels for a card, or null when it is not a schedulable card. */
+  /** Grade-button labels for a card, or null when it is not a mark. */
   private cardPreviews(id: string): Record<ReviewGrade, string> | null {
     const mark = this.markById(id);
-    if (!mark || !isCard(mark)) return null;
+    if (!mark) return null;
     const rows = this.reviewStore?.rows(this.currentPath ?? "") ?? {};
     const previews = previewIntervals({
       row: rows[id] ?? null,
@@ -2170,7 +2187,12 @@ export class App {
   /** Records a grade. The player has already advanced past the card. */
   private async gradeCard(grade: ReviewGrade, id: string): Promise<void> {
     if (!this.reviewStore || !this.currentPath) return;
-    if (!this.markById(id)) return;
+    const mark = this.markById(id);
+    if (!mark) return;
+    // Grading an uncarded mark is the Alt+click modal's authoring path: the
+    // rating is the commitment, so the card is created only now. Closing the
+    // modal without a grade leaves the mark untouched.
+    if (!isCard(mark)) this.setCard(id, {});
     const now = Date.now();
     const row = await this.reviewStore.grade({
       docPath: this.currentPath,
@@ -2226,18 +2248,60 @@ export class App {
     return this.cards().filter((m) => groupMembers(this.marks(), m).some((g) => ids.has(g.id)));
   }
 
-  // Cards reachable from no box at all: page-scoped marks, and marks whose only
-  // handle is a box that no longer exists. These get the synthetic deck.
-  private looseCards(): Mark[] {
+  // Cards reachable from no box at all, partitioned by the section (outline
+  // node) whose span holds them. Section bands run from a node's start to the
+  // next sibling's start and tile the document, so each loose card belongs to
+  // exactly one section — the deepest one that contains it.
+  private sectionLoose(): Map<string, Mark[]> {
+    const out = new Map<string, Mark[]>();
     const covered = new Set<string>();
     for (const box of this.boxes()) {
       for (const m of this.deckCardsForBox(box)) covered.add(m.id);
     }
-    return this.cards().filter((m) => !covered.has(m.id));
+    const loose = this.cards().filter((m) => !covered.has(m.id));
+    if (!loose.length) return out;
+    const tree = buildOutlineTree(this.allEntities());
+    if (!tree.length) return out;
+
+    type Pos = { page: number; y: number };
+    const posOf = (mark: Mark): Pos => {
+      const span = mark.spans[0];
+      return { page: span?.page ?? 0, y: span?.y ?? 0 };
+    };
+    const startOf = (node: OutlineNode): Pos | null => {
+      const span = this.boxById(node.id)?.spans[0];
+      return span ? { page: span.page, y: span.y } : null;
+    };
+    // [start, stop), compared page first then y. The first root reaches back to
+    // the document start and the last runs to the end, so nothing above or below
+    // the outlined boxes is orphaned.
+    const deepest = (nodes: OutlineNode[], stop: Pos | null, p: Pos): OutlineNode | null => {
+      for (let i = 0; i < nodes.length; i++) {
+        const raw = startOf(nodes[i]);
+        if (!raw) continue;
+        const start = stop === null && i === 0 ? { page: 0, y: 0 } : raw;
+        const next = i + 1 < nodes.length ? startOf(nodes[i + 1]) : null;
+        const end = next ?? stop;
+        const after = p.page > start.page || (p.page === start.page && p.y >= start.y);
+        const before = !end || p.page < end.page || (p.page === end.page && p.y < end.y);
+        if (!after || !before) continue;
+        return deepest(nodes[i].children, end, p) ?? nodes[i];
+      }
+      return null;
+    };
+    for (const mark of loose) {
+      const node = deepest(tree, null, posOf(mark));
+      if (!node) continue;
+      const list = out.get(node.id);
+      if (list) list.push(mark);
+      else out.set(node.id, [mark]);
+    }
+    return out;
   }
 
   private deckCards(id: string): Mark[] {
-    if (id === UNGROUPED_DECK) return this.looseCards();
+    const looseNode = looseNodeId(id);
+    if (looseNode !== null) return this.sectionLoose().get(looseNode) ?? [];
     const tree = buildOutlineTree(this.allEntities());
     const node = findNode(tree, id);
     const seen = new Map<string, Mark>();
@@ -2254,9 +2318,10 @@ export class App {
     return [...seen.values()];
   }
 
-  // Per-scope deck counts for the outline badges, keyed by box id plus
-  // `UNGROUPED_DECK`. A post-order union means each ancestor's count is the
-  // distinct cards beneath it, with no double counting through shared handles.
+  // Per-scope deck counts for the outline badges, keyed by box id plus one
+  // `loose:` key per section. A post-order union means each ancestor's count is
+  // the distinct cards beneath it, with no double counting through shared
+  // handles.
   private deckCounts(): Map<string, DeckCounts> {
     const out = new Map<string, DeckCounts>();
     if (!this.reviewStore || !this.currentPath) return out;
@@ -2275,8 +2340,9 @@ export class App {
     };
     for (const root of buildOutlineTree(this.allEntities())) visit(root);
 
-    const loose = this.looseCards();
-    out.set(UNGROUPED_DECK, countDeck(loose.map((m) => m.id), rows, now));
+    for (const [nodeId, marks] of this.sectionLoose()) {
+      out.set(looseDeckId(nodeId), countDeck(marks.map((m) => m.id), rows, now));
+    }
     return out;
   }
 
@@ -3375,7 +3441,9 @@ export class App {
   // the card would leave its other lines covered.
   private marksForPlayerItem(id: string): Mark[] {
     const mark = this.markById(id);
-    if (mark && isCard(mark)) return groupMembers(this.marks(), mark);
+    // Uncarded marks reach here from the Alt+click modal, so this cannot key on
+    // isCard: the modal has to paint the mark it was opened on.
+    if (mark) return groupMembers(this.marks(), mark);
     return this.marksForBox(id);
   }
 

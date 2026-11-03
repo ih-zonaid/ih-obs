@@ -162,14 +162,17 @@ export class Player {
     if (this.open) this.paintOverlayOnly();
   }
 
-  start(items: PlayerItem[]): void {
+  // `revealed` starts the sitting with the answer showing. Only the Alt+click
+  // authoring modal asks for it: there the point is to grade the card you just
+  // looked at, not to run a recall step.
+  start(items: PlayerItem[], revealed = false): void {
     if (!items.length) return;
     this.items = items;
     this.byId = new Map(items.map((item) => [item.id, item]));
     this.pending = [];
     this.random = false;
     this.index = 0;
-    this.revealed = false;
+    this.revealed = revealed;
     this.editingNote = false;
     this.noteExpanded = false;
     this.resetContext();

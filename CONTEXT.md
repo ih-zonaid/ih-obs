@@ -95,6 +95,10 @@ A mark **is** a flashcard iff `mark.card` is set. No automatic promotion.
 - Authoring: right-click a mark → **Make card**, then optionally **Use selected
   box as context** / **Frame with …**. Right-click a `frame` box → **Play cards
   in frame**. Cards can also be assigned context/frame from the mark menu.
+  **Alt+click** a mark opens it in the player as a single card: grading there
+  creates `mark.card` and the review row, so the rating is the commitment.
+  Closing without grading leaves the mark untouched (it is not a card).
+  Deletion is the mark menu's **Remove**; Alt+click no longer means delete.
 - Play scope is **within a frame** — cards whose *mark span* falls inside the
   selected frame's span (testing the derived crop would fail for the default
   full-width band; see `openPlayer` in `app.ts`).
@@ -140,9 +144,13 @@ descendants.
   reachable from a row that contains its `card.context` or `card.frame` box, so a
   card's crop boxes are themselves valid deck handles even if the mark sits
   elsewhere.
-- Page-scoped cards (no live box owner) form one synthetic **Ungrouped cards**
-  row at the top of the outline (`UNGROUPED_DECK` in `src/ui/outline.ts`); they
-  would otherwise appear in no subtree and contribute to no ancestor badge.
+- Cards no box reaches (page-scoped marks, or marks whose only handle is a box
+  that no longer exists) appear as a synthetic **Ungrouped cards** child row
+  under the section that holds them (`loose:<nodeId>` in `src/ui/outline.ts`).
+  Sections tile the document — a node runs from its start to the next sibling's
+  start, the first root reaching back to the document start — so every loose card
+  lands in exactly one section, the deepest one containing it. There is no
+  global bucket.
 - Each row shows a deck badge: `◇` + (due + new), blue when there is work, with
   the full `due · new · scheduled · total` breakdown in the tooltip. A dim play
   button on every row plays that subtree's cards through `buildQueue`.

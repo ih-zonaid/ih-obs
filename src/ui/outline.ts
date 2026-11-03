@@ -3,9 +3,18 @@ import type { DeckCounts } from "../srs";
 import type { DrawTool } from "./segmentDraw";
 import { icon, type IconName } from "./icons";
 
-// Pseudo-id for the page-scoped cards that no box contains. The app owns the
-// review rows; this is only the scope key the outline hands back on play.
-export const UNGROUPED_DECK = "__ungrouped__";
+// Pseudo-id prefix for the cards a section cannot place in any box. The app
+// owns the review rows; this is only the scope key the outline hands back on
+// play. The node id follows the prefix so one row belongs to one section.
+export const LOOSE_PREFIX = "loose:";
+
+export function looseDeckId(nodeId: string): string {
+  return `${LOOSE_PREFIX}${nodeId}`;
+}
+
+export function looseNodeId(deckId: string): string | null {
+  return deckId.startsWith(LOOSE_PREFIX) ? deckId.slice(LOOSE_PREFIX.length) : null;
+}
 
 const NO_DECK: DeckCounts = { due: 0, fresh: 0, seen: 0, total: 0 };
 
@@ -41,7 +50,7 @@ export interface OutlineHandlers {
   onSplitCancel(): void;
   // `scope` tells the app what the row means: a `question` box or `frame` plays
   // its own contained cards, anything else (`deck`) plays the card marks in the
-  // row's subtree. The `UNGROUPED_DECK` id is the page-scoped cards no box owns.
+  // row's subtree. A `loose:` id is the section's cards that no box contains.
   onPlay(id: string, scope: "deck" | "question" | "frame"): void;
   onClear(): void;
   // Recomputes deck counts for the current entities. Called whenever the review
@@ -205,14 +214,9 @@ export class Outline {
   private list(tree: OutlineNode[]): HTMLElement {
     const list = document.createElement("div");
     list.className = "outline-list";
-    // Cards no box contains (page-scoped) get their own row, or they would be
-    // invisible as a deck: they appear in no subtree, so they contribute to no
-    // ancestor's count.
-    const loose = this.decks.get(UNGROUPED_DECK) ?? NO_DECK;
-    if (loose.total > 0) list.appendChild(this.ungroupedRow(loose));
     for (const node of tree) this.appendNode(list, node);
 
-    if (!tree.length && loose.total === 0) {
+    if (!tree.length) {
       const hint = document.createElement("div");
       hint.className = "outline-hint";
       hint.textContent = "Nothing yet. Pick a tool above, then draw a box or place an anchor line.";
@@ -221,15 +225,30 @@ export class Outline {
     return list;
   }
 
-  // The synthetic root for free-floating cards. Not editable or deletable — it
-  // owns no entity — only playable and countable.
-  private ungroupedRow(counts: DeckCounts): HTMLElement {
+  private appendNode(parent: HTMLElement, node: OutlineNode): void {
+    parent.appendChild(this.row(node));
+    if (this.collapsed.has(node.id)) return;
+    for (const child of node.children) this.appendNode(parent, child);
+    // Cards in this node's span that no box contains. Rendered last so it reads
+    // as part of the section, not as one of its boxes.
+    const loose = this.decks.get(looseDeckId(node.id)) ?? NO_DECK;
+    if (loose.total > 0) parent.appendChild(this.looseRow(node.id, node.depth + 1, loose));
+  }
+
+  // The synthetic child row for cards a section cannot place in any box. Not
+  // editable or deletable — it owns no entity — only playable and countable.
+  private looseRow(nodeId: string, depth: number, counts: DeckCounts): HTMLElement {
     const row = document.createElement("div");
     row.className = "outline-row loose";
-    row.dataset.id = UNGROUPED_DECK;
+    row.dataset.id = looseDeckId(nodeId);
 
     const gutter = document.createElement("div");
     gutter.className = "outline-gutter";
+    for (let i = 0; i < depth; i++) {
+      const guide = document.createElement("span");
+      guide.className = "outline-guide";
+      gutter.appendChild(guide);
+    }
     const chevron = document.createElement("span");
     chevron.className = "outline-chevron empty";
     chevron.textContent = "•";
@@ -244,7 +263,7 @@ export class Outline {
     const name = document.createElement("span");
     name.className = "outline-name";
     name.textContent = "Ungrouped cards";
-    name.title = "cards no box contains";
+    name.title = "cards in this section that no box contains";
     row.appendChild(name);
 
     const badge = document.createElement("span");
@@ -258,23 +277,17 @@ export class Outline {
     play.className = "outline-play";
     if (actionable) play.classList.add("due");
     play.appendChild(icon("play", 11));
-    play.title = actionable ? "play ungrouped cards" : "no cards due";
+    play.title = actionable ? "play this section's ungrouped cards" : "no cards due";
     play.setAttribute("role", "button");
     play.setAttribute("aria-label", play.title);
     play.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      this.handlers.onPlay(UNGROUPED_DECK, "deck");
+      this.handlers.onPlay(looseDeckId(nodeId), "deck");
     });
     row.appendChild(play);
 
-    row.addEventListener("click", () => this.handlers.onBrowseDeck?.(UNGROUPED_DECK));
+    row.addEventListener("click", () => this.handlers.onBrowseDeck?.(looseDeckId(nodeId)));
     return row;
-  }
-
-  private appendNode(parent: HTMLElement, node: OutlineNode): void {
-    parent.appendChild(this.row(node));
-    if (this.collapsed.has(node.id)) return;
-    for (const child of node.children) this.appendNode(parent, child);
   }
 
   private row(node: OutlineNode): HTMLElement {
