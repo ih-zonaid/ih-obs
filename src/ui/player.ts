@@ -26,6 +26,7 @@ export interface PlayerItem {
 // carries its own label in the head.
 export interface PlayerNote {
   body: string;
+  drawing?: string;
 }
 
 export interface PlayerSource {
@@ -55,6 +56,8 @@ export interface PlayerSource {
   // answer is showing: a note usually restates it, so surfacing one early would
   // give the card away.
   note?(id: string): PlayerNote | null;
+  // Thumbnail (data URL) for a note's drawing, shown in the note strip.
+  drawingThumb?(drawingId: string): Promise<string | null>;
 }
 
 export interface PlayerHandlers {
@@ -638,7 +641,8 @@ export class Player {
     if (this.editingNote) return;
 
     const item = this.current();
-    const body = item && this.revealed ? this.source.note?.(item.id)?.body.trim() ?? "" : "";
+    const note = item && this.revealed ? this.source.note?.(item.id) : null;
+    const body = note?.body.trim() ?? "";
     host.innerHTML = "";
     host.hidden = !item || !this.revealed;
     host.classList.toggle("expanded", this.noteExpanded);
@@ -659,6 +663,17 @@ export class Player {
       md.innerHTML = renderMarkdown(body, this.source.path?.() ?? "");
       md.addEventListener("click", () => this.toggleNoteExpanded());
       host.append(preview, md);
+    }
+
+    if (note?.drawing && this.source.drawingThumb) {
+      const img = document.createElement("img");
+      img.className = "player-note-drawing";
+      img.alt = "drawing";
+      void this.source.drawingThumb(note.drawing).then((url) => {
+        if (url) img.src = url;
+        else img.remove();
+      });
+      host.appendChild(img);
     }
 
     // One button covers both cases; only the glyph and wording change, so the

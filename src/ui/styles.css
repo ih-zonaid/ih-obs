@@ -2049,3 +2049,28 @@ body.resizing { cursor: col-resize; user-select: none; }
   .outline-row,
   .outline-btn { -webkit-tap-highlight-color: transparent; }
 }
+
+.note-row-thumb { display: block; max-width: 100%; max-height: 140px; margin: 6px 0; border-radius: 4px; background: #fff; }
+.player-note-drawing { display: block; max-width: 100%; max-height: 40vh; margin: 6px 0; border-radius: 4px; background: #fff; }
+.note-hover-drawing { display: block; max-width: 320px; max-height: 240px; margin: 4px 0; border-radius: 4px; background: #fff; }
+
+/* Excalidraw side panel (src/ui/drawingEditor.ts): docked, the page shrinks. */
+.shell.has-drawing { width: calc(100% - var(--draw-w, 40vw)); }
+.drawing-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg, #fff); color: var(--fg, #111); border-left: 1px solid var(--border, rgba(128,128,128,.3)); }
+.drawing-panel.resizing { user-select: none; }
+.drawing-panel.resizing .drawing-host { pointer-events: none; }
+.drawing-grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+.drawing-grip:hover { background: var(--accent, #2f6feb); opacity: .4; }
+.drawing-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; height: 44px; box-sizing: border-box; border-bottom: 1px solid var(--border, rgba(128,128,128,.3)); }
+.drawing-title { flex: 1; font-size: 13px; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drawing-status { font-size: 11px; opacity: .6; }
+.drawing-host { flex: 1; min-height: 0; position: relative; }
+@media (max-width: 900px) {
+  .shell.has-drawing { width: 100%; }
+  .drawing-panel { width: 100% !important; top: 30%; border-left: 0; border-top: 1px solid var(--border, rgba(128,128,128,.3)); }
+}
+
+/* A drawing pin reads differently from a note pin at a glance: amber rounded
+   square with a pen, against the blue round pin. */
+.ihobs-note-pin.drawing { background: #f5a524; border-radius: 5px; width: 19px; height: 19px; }
+.ihobs-note-pin.drawing:hover { background: #ffc15c; }

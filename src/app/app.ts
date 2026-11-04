@@ -18,6 +18,8 @@ import {
 import { Overlay, type NotePin, type OverlayMode } from "../overlay/overlay";
 import { ReviewStore } from "../store/review";
 import { SidecarStore } from "../store/sidecar";
+import { DrawingStore } from "../store/drawings";
+import { closeDrawingEditor, openDrawingEditor } from "../ui/drawingEditor";
 import {
   loadPageMode,
   loadTheme,
@@ -249,6 +251,12 @@ export class App {
   private vault: VaultRecord | null = null;
   private store: SidecarStore | null = null;
   private reviewStore: ReviewStore | null = null;
+  private drawings: DrawingStore | null = null;
+  // Drawing ids the open document's notes referenced at the last save, so a note
+  // that disappears by any route (box delete, group merge, panel delete) takes
+  // its drawing file with it instead of every site remembering to.
+  private knownDrawings = new Set<string>();
+  private thumbCache = new Map<string, string | null>();
   private prefs = new PrefsStore();
 
   private view: DocView | null = null;
@@ -373,6 +381,11 @@ export class App {
           hint: "note at this spot",
           onSelect: () => this.openPointNote(at, e.clientX, e.clientY)
         },
+        {
+          label: "Pin drawing here…",
+          hint: "excalidraw",
+          onSelect: () => void this.openDrawingTarget("point", newNoteId(), at)
+        },
         "separator"
       );
     }
@@ -481,7 +494,7 @@ export class App {
       decks: () => this.deckCounts(),
       onBrowseDeck: (id) => this.browseDeck(id),
       docPath: () => this.currentPath ?? "",
-      onNote: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y),
+      onNote: (id, kind, x, y) => this.activateNote(kind, id, x, y),
       hasNote: (id) => this.hasNote(id),
       onNoteHover: (id, kind, x, y) => this.hoverNote(kind, id, x, y),
       onNoteLeave: () => this.leaveNote()
@@ -499,7 +512,8 @@ export class App {
         siblingIds: (id) => this.siblingCardIds(id),
         reorder: (ids, random) => this.reorderCards(ids, random),
         path: () => this.currentPath ?? "",
-        note: (id) => this.noteForPlayerItem(id)
+        note: (id) => this.noteForPlayerItem(id),
+        drawingThumb: (id) => this.drawingThumb(id)
       },
       {
         onClose: () => undefined,
@@ -511,7 +525,8 @@ export class App {
     this.notesPanel = new NotesPanel(this.shell.notes, {
       onFocus: (id) => this.focusNote(id),
       onEdit: (id, anchor) => this.editNote(id, anchor),
-      onDelete: (id) => void this.deleteNote(id)
+      onDelete: (id) => void this.deleteNote(id),
+      thumb: (id) => this.drawingThumb(id)
     });
 
     this.toolbar = new Toolbar(this.shell.root.querySelector(".toolbar") as HTMLElement, {
@@ -1020,6 +1035,7 @@ export class App {
     const beside = !!rec.single;
     this.store = new SidecarStore(rec.handle, { beside });
     this.reviewStore = new ReviewStore(rec.handle, { beside });
+    this.drawings = new DrawingStore(rec.handle);
     this.prefs = new PrefsStore().withVault(rec.id);
     const prefs = await this.prefs.load();
     this.toolbar.setVaultLabel(rec.label);
@@ -1309,6 +1325,7 @@ export class App {
     // its pins are read back out of `notes` (notePins) rather than handed in.
     this.entities = model.entities;
     this.notes = model.notes;
+    this.knownDrawings = new Set(model.notes.flatMap((n) => (n.drawing ? [n.drawing] : [])));
     const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
@@ -1324,7 +1341,10 @@ export class App {
       onCueHover: (id, x, y) => this.hoverCue(id, x, y),
       onCueLeave: () => this.leaveNote(),
       pins: () => this.notePins(),
-      onPinOpen: (id, x, y) => this.openNoteTarget("point", id, x, y),
+      onPinOpen: (id, x, y) => {
+        // A drawing-only pin has no text to edit, so a click goes to the canvas.
+        this.activateNote("point", id, x, y);
+      },
       onPinHover: (id, x, y) => this.hoverNote("point", id, x, y),
       onPinLeave: () => this.leaveNote(),
       onPinContext: (id, x, y) => this.openPinMenu(id, x, y),
@@ -1344,7 +1364,7 @@ export class App {
       onContext: (id, kind, x, y) => this.openEntryMenu(id, kind, x, y),
       getActive: () => this.activeId,
       hasNote: (id) => this.hasNote(id),
-      onNoteBadge: (id, kind, x, y) => this.openNoteTarget(kind, id, x, y),
+      onNoteBadge: (id, kind, x, y) => this.activateNote(kind, id, x, y),
       onNoteHover: (id, kind, x, y) => this.hoverNote(kind, id, x, y),
       onNoteLeave: () => this.leaveNote()
     });
@@ -2577,6 +2597,16 @@ export class App {
   // notes open prefilled; an editor on a blank note deletes it when cleared.
   // `at` is the point for a pin being created — an existing pin already carries
   // its own, and opening one leaves it where it is.
+  // What clicking a note indicator does: a drawing-only note has no text to
+  // edit, so it opens the canvas; anything with text opens the text editor. The
+  // menu's explicit "Edit note…" still always opens the text editor.
+  private activateNote(kind: NoteTargetKind, id: string, x: number, y: number): void {
+    const anchor = this.noteAnchor(kind, id);
+    const note = this.notes.find((n) => n.target === anchor.target);
+    if (note?.drawing && !note.body.trim()) void this.openDrawingTarget(kind, id);
+    else this.openNoteTarget(kind, id, x, y);
+  }
+
   private openNoteTarget(
     kind: NoteTargetKind,
     id: string,
@@ -2596,7 +2626,55 @@ export class App {
       path: this.currentPath ?? "",
       anchor: { x, y },
       onSave: (body) => void this.saveNote(anchor.kind, anchor.target, body, existing, undefined, at),
-      onDelete: existing ? () => void this.deleteNote(existing.id) : undefined
+      // Clearing the text of a note that also holds a drawing must not throw the
+      // drawing away; the panel's delete button removes the whole note.
+      onDelete: existing
+        ? () =>
+            existing.drawing
+              ? void this.saveNote(anchor.kind, anchor.target, "", existing)
+              : void this.deleteNote(existing.id)
+        : undefined
+    });
+  }
+
+  // Opens Excalidraw for an anchor, creating a drawing-only note on first save.
+  private async openDrawingTarget(kind: NoteTargetKind, id: string, at?: NoteAnchor): Promise<void> {
+    const store = this.drawings;
+    if (!store) return;
+    this.cancelNoteHover();
+    const anchor = this.noteAnchor(kind, id);
+    const existing = this.notes.find((n) => n.target === anchor.target);
+    const drawingId = existing?.drawing ?? `d_${newNoteId()}`;
+    const initial = existing?.drawing ? await store.read(drawingId) : null;
+    const label = this.noteLabel(anchor.kind, anchor.target);
+    await openDrawingEditor({
+      key: drawingId,
+      title: `Drawing · ${label}`,
+      initial,
+      // Autosaves repeat, so the note is looked up afresh each time: the first
+      // save creates it, later ones only touch it. The note is created before
+      // the first await so closing the panel mid-teardown still lands it on
+      // this document.
+      onSave: (json) => {
+        const note = this.notes.find((n) => n.target === anchor.target);
+        let persisted: Promise<void>;
+        if (note) {
+          note.drawing ??= drawingId;
+          note.updatedAt = Date.now();
+          persisted = this.persistNotes();
+        } else {
+          void this.saveNote(anchor.kind, anchor.target, "", undefined, undefined, at);
+          const created = this.notes.find((n) => n.target === anchor.target);
+          if (created) created.drawing = drawingId;
+          persisted = this.persistNotes();
+        }
+        return Promise.all([store.write(drawingId, json), persisted]).then(() => undefined);
+      },
+      onThumb: async (svg) => {
+        await store.writeSvg(drawingId, svg);
+        this.thumbCache.delete(drawingId);
+        this.refreshNotes();
+      }
     });
   }
 
@@ -2613,7 +2691,7 @@ export class App {
   private notePins(): NotePin[] {
     const pins: NotePin[] = [];
     for (const n of this.notes) {
-      if (n.targetKind === "point" && n.at) pins.push({ id: n.id, at: n.at });
+      if (n.targetKind === "point" && n.at) pins.push({ id: n.id, at: n.at, drawing: !!n.drawing });
     }
     return pins;
   }
@@ -2626,6 +2704,11 @@ export class App {
         label: "Edit note…",
         hint: "markdown",
         onSelect: () => this.openNoteTarget("point", id, x, y)
+      },
+      {
+        label: note.drawing ? "Edit drawing…" : "Add drawing…",
+        hint: "excalidraw",
+        onSelect: () => void this.openDrawingTarget("point", id)
       },
       "separator",
       { label: "Delete note", danger: true, onSelect: () => void this.deleteNote(id) }
@@ -2650,7 +2733,7 @@ export class App {
   // previews the same thing.
   private openMarkAttachment(id: string, x: number, y: number): void {
     if (this.notes.some((n) => n.target === this.noteAnchor("mark", id).target)) {
-      this.openNoteTarget("mark", id, x, y);
+      this.activateNote("mark", id, x, y);
     } else {
       this.openCueEditor(id, { x, y });
     }
@@ -2714,7 +2797,7 @@ export class App {
   private hoverNote(kind: NoteTargetKind, id: string, x: number, y: number): void {
     const anchor = this.noteAnchor(kind, id);
     const note = this.notes.find((n) => n.target === anchor.target);
-    if (!note?.body.trim()) return;
+    if (!note?.body.trim() && !note?.drawing) return;
     this.clearNotePreviewTimer();
     this.requestPreview({ kind: "note", targetKind: kind, id, x, y });
   }
@@ -2743,17 +2826,21 @@ export class App {
     if (req.kind === "note") {
       const anchor = this.noteAnchor(req.targetKind, req.id);
       const note = this.notes.find((n) => n.target === anchor.target);
-      if (!note?.body.trim()) return;
+      if (!note?.body.trim() && !note?.drawing) return;
       const label = this.noteLabel(anchor.kind, anchor.target);
       const page = this.notePage(anchor.kind, anchor.target);
       showNotePreview({
         title: `Note · ${label}${page !== undefined ? ` · p${page + 1}` : ""}`,
         quote: note.quote,
         body: note.body,
+        drawing: note.drawing ? this.drawingThumb(note.drawing) : undefined,
         path: this.currentPath ?? "",
         anchor: { x: req.x, y: req.y + 6 },
         onHoverChange: (over) => this.previewHover(over),
-        onEdit: () => this.openNoteTarget(req.targetKind, req.id, req.x, req.y)
+        onEdit: () =>
+          note.drawing && !note.body.trim()
+            ? void this.openDrawingTarget(req.targetKind, req.id)
+            : this.openNoteTarget(req.targetKind, req.id, req.x, req.y)
       });
       return;
     }
@@ -2878,6 +2965,7 @@ export class App {
       .map((n) => ({
         id: n.id,
         body: n.body,
+        drawing: n.drawing,
         quote: n.quote,
         target: n.target,
         targetKind: n.targetKind,
@@ -2890,6 +2978,23 @@ export class App {
   private async persistNotes(): Promise<void> {
     if (!this.store || !this.view || !this.currentPath) return;
     await this.store.saveNotes(this.currentPath, this.view.kind, this.notes);
+    const live = new Set(this.notes.flatMap((n) => (n.drawing ? [n.drawing] : [])));
+    for (const id of this.knownDrawings) {
+      if (!live.has(id)) {
+        void this.drawings?.remove(id);
+        this.thumbCache.delete(id);
+      }
+    }
+    this.knownDrawings = live;
+  }
+
+  // Thumbnail SVG as a data URL, cached per drawing for the session.
+  private async drawingThumb(id: string): Promise<string | null> {
+    if (this.thumbCache.has(id)) return this.thumbCache.get(id) ?? null;
+    const svg = await this.drawings?.readSvg(id);
+    const url = svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : null;
+    this.thumbCache.set(id, url);
+    return url;
   }
 
   // The hint names the kind of note on offer, so the page menu can tell a
@@ -2908,6 +3013,13 @@ export class App {
         label: has ? "Edit note…" : "Add note…",
         hint,
         onSelect: () => this.openNoteTarget(kind, id, x, y)
+      },
+      {
+        label: this.notes.some((n) => n.target === anchor.target && n.drawing)
+          ? "Edit drawing…"
+          : "Add drawing…",
+        hint: "excalidraw",
+        onSelect: () => void this.openDrawingTarget(kind, id)
       }
     ];
   }
@@ -3171,6 +3283,7 @@ export class App {
         body: joined,
         quote: groupNote?.quote ?? memberNotes[0].quote,
         page: groupNote?.page ?? memberNotes[0].page,
+        drawing: [groupNote, ...memberNotes].find((n) => n?.drawing)?.drawing,
         createdAt: groupNote?.createdAt ?? now,
         updatedAt: now
       });
@@ -3460,8 +3573,9 @@ export class App {
   private noteForPlayerItem(id: string): PlayerNote | null {
     const anchor = this.playerNoteAnchor(id);
     if (!anchor) return null;
-    const body = this.notes.find((n) => n.target === anchor.target)?.body.trim();
-    return body ? { body } : null;
+    const note = this.notes.find((n) => n.target === anchor.target);
+    const body = note?.body.trim() ?? "";
+    return body || note?.drawing ? { body, drawing: note?.drawing } : null;
   }
 
   // An empty body removes the note, matching what clearing the body in the note
@@ -3671,6 +3785,9 @@ export class App {
     // Supersede any load still in flight: bumping loadSeq makes openPath()
     // discard it when it resolves, and aborting lets the adapter itself bail
     // out of expensive setup early instead of racing the new load.
+    // Flushes a pending drawing against the document it belongs to before the
+    // notes below are swapped out.
+    void closeDrawingEditor();
     this.loadSeq++;
     this.loadAbort?.abort();
     this.loadAbort = null;
@@ -3686,6 +3803,7 @@ export class App {
     this.segLayer = null;
     this.entities = [];
     this.notes = [];
+    this.knownDrawings = new Set();
     this.activeId = null;
     this.drawTool = null;
     this.shell.rail.classList.add("hidden");

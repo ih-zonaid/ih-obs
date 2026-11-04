@@ -186,7 +186,7 @@ function shellFiles(outDir: string): string[] {
       if (entry.isDirectory()) walk(path);
       else if (entry.isFile()) {
         const rel = relative(outDir, path).split(sep).join("/");
-        if (rel === "index.html" || rel === "pdf.worker.min.mjs" || rel.startsWith("assets/")) {
+        if (rel === "index.html" || rel === "pdf.worker.min.mjs" || rel.startsWith("assets/") || rel.startsWith("excalidraw/")) {
           found.push(rel);
         }
       }

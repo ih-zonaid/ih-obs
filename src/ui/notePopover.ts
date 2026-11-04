@@ -23,6 +23,8 @@ export interface NotePreviewOptions {
   title?: string;
   quote?: string;
   body: string;
+  // Thumbnail data URL for a drawing attached to the note, resolved lazily.
+  drawing?: Promise<string | null>;
   path?: string;
   anchor: { x: number; y: number };
   // Fired as the pointer enters/leaves the card, so the caller can keep it
@@ -258,7 +260,19 @@ export class NotePreview {
     const body = document.createElement("div");
     body.className = "note-hover-body md-body";
     body.innerHTML = renderMarkdown(opts.body, opts.path ?? "");
-    el.appendChild(body);
+    if (opts.body.trim()) el.appendChild(body);
+
+    if (opts.drawing) {
+      const img = document.createElement("img");
+      img.className = "note-hover-drawing";
+      img.alt = "drawing";
+      void opts.drawing.then((url) => {
+        if (!url) return img.remove();
+        img.addEventListener("load", () => this.place(el, opts.anchor.x, opts.anchor.y));
+        img.src = url;
+      });
+      el.appendChild(img);
+    }
 
     const foot = document.createElement("div");
     foot.className = "note-hover-foot";

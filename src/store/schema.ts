@@ -182,6 +182,9 @@ export interface Note {
   quote?: string;
   // Page the target lives on, for list ordering.
   page?: number;
+  // Id of an Excalidraw scene stored at `.ihobs/drawings/<id>.excalidraw`. A
+  // note may be a drawing alone (empty body).
+  drawing?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -993,7 +996,8 @@ function migrateNotes(raw: unknown): Note[] {
   for (const n of raw as Note[]) {
     if (!n || typeof n !== "object") continue;
     if (typeof n.target !== "string" || !n.target) continue;
-    if (typeof n.body !== "string" || !n.body.trim()) continue;
+    const drawing = typeof n.drawing === "string" && n.drawing ? n.drawing : undefined;
+    if (typeof n.body !== "string" || (!n.body.trim() && !drawing)) continue;
     const id = typeof n.id === "string" && n.id ? n.id : newNoteId();
     if (seen.has(id)) continue;
     seen.add(id);
@@ -1006,6 +1010,7 @@ function migrateNotes(raw: unknown): Note[] {
       at,
       quote: typeof n.quote === "string" ? n.quote : undefined,
       page: typeof n.page === "number" ? n.page : at?.page,
+      drawing,
       createdAt: typeof n.createdAt === "number" ? n.createdAt : Date.now(),
       updatedAt: typeof n.updatedAt === "number" ? n.updatedAt : Date.now()
     });

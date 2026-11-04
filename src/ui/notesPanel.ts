@@ -4,6 +4,7 @@ import { icon, type IconName } from "./icons";
 export interface NoteRow {
   id: string;
   body: string;
+  drawing?: string;
   quote?: string;
   target: string;
   targetKind: NoteTargetKind;
@@ -17,6 +18,7 @@ export interface NotesPanelHandlers {
   onFocus(id: string): void;
   onEdit(id: string, anchor: { x: number; y: number }): void;
   onDelete(id: string): void;
+  thumb?(drawingId: string): Promise<string | null>;
 }
 
 const KIND_ICON: Record<NoteTargetKind, IconName> = {
@@ -129,10 +131,23 @@ export class NotesPanel {
       el.appendChild(quote);
     }
 
-    const body = document.createElement("div");
-    body.className = "note-row-body md-body";
-    body.textContent = row.body;
-    el.appendChild(body);
+    if (row.drawing && this.handlers.thumb) {
+      const img = document.createElement("img");
+      img.className = "note-row-thumb";
+      img.alt = "drawing";
+      void this.handlers.thumb(row.drawing).then((url) => {
+        if (url) img.src = url;
+        else img.remove();
+      });
+      el.appendChild(img);
+    }
+
+    if (row.body.trim()) {
+      const body = document.createElement("div");
+      body.className = "note-row-body md-body";
+      body.textContent = row.body;
+      el.appendChild(body);
+    }
 
     const actions = document.createElement("div");
     actions.className = "note-row-actions";

@@ -28,6 +28,8 @@ export type OverlayMode = "none" | "occlude" | "highlight" | "line" | "ink";
 export interface NotePin {
   id: string;
   at: NoteAnchor;
+  // A pin that holds an Excalidraw drawing, drawn with its own icon and colour.
+  drawing?: boolean;
 }
 
 export interface OverlayOptions {
@@ -971,10 +973,12 @@ export class Overlay {
       if (!layer) continue;
       const { w, h } = this.surfaceSize(pin.at.page);
       const el = document.createElement("div");
-      el.className = "ihobs-note-pin";
+      el.className = pin.drawing ? "ihobs-note-pin drawing" : "ihobs-note-pin";
       el.dataset.id = pin.id;
-      el.title = "pinned note — click to open · drag to move";
-      el.appendChild(icon("pin", 11));
+      el.title = pin.drawing
+        ? "pinned drawing — click to open · drag to move"
+        : "pinned note — click to open · drag to move";
+      el.appendChild(icon(pin.drawing ? "pen" : "pin", 11));
       el.style.left = `${pin.at.x * w}px`;
       el.style.top = `${pin.at.y * h}px`;
       el.addEventListener("pointerdown", (e) => this.pinPointerDown(e, pin, el, layer));

@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
-import { copyFileSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { writePwa } from "./build/pwa";
 
 const OUT = "dist";
@@ -63,6 +63,16 @@ export default defineConfig({
         if (existsSync(assets)) {
           const emitted = readdirSync(assets).find((f) => f.startsWith("pdf.worker"));
           if (emitted) copyFileSync(resolve(assets, emitted), resolve(out, "pdf.worker.min.mjs"));
+        }
+
+        // Excalidraw fonts, served from our own origin so drawings work offline
+        // (see drawingEditor.ts). The CJK family is 12 MB and skipped.
+        const fonts = resolve(__dirname, "node_modules/@excalidraw/excalidraw/dist/prod/fonts");
+        if (existsSync(fonts)) {
+          cpSync(fonts, resolve(out, "excalidraw/fonts"), {
+            recursive: true,
+            filter: (src) => !src.includes("Xiaolai")
+          });
         }
 
         // Last, so the shell list and its content hash cover everything above.
