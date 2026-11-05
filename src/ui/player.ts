@@ -40,6 +40,9 @@ export interface PlayerSource {
   // button (e.g. "3d"). Returns null when the item is not a schedulable card,
   // which hides the grade row.
   preview?(id: string): Record<ReviewGrade, string> | null;
+  // Whether an item is currently a flashcard, so the un-card control can hide
+  // on question play and on the Alt+click modal before it is graded.
+  isCard?(id: string): boolean;
   // Marks that reveal together with this card, dropped from the sitting when it
   // is answered so one logical answer is not asked several times in a row.
   siblingIds?(id: string): string[];
@@ -51,10 +54,10 @@ export interface PlayerSource {
   // Vault path of the open document, so a cue's [[wikilinks]] resolve relative
   // to the same place they would in a note.
   path?(): string;
-  // The note attached to this item, read on reveal and written from the strip
-  // under the crop. Null when there is none. Only ever consulted while the
-  // answer is showing: a note usually restates it, so surfacing one early would
-  // give the card away.
+  // The note attached to this item, also written from the strip under the crop.
+  // Null when there is none. Read before the reveal only to reserve the strip's
+  // height; its contents still wait for the reveal, because a note usually
+  // restates the answer.
   note?(id: string): PlayerNote | null;
   // Thumbnail (data URL) for a note's drawing, shown in the note strip.
   drawingThumb?(drawingId: string): Promise<string | null>;
@@ -65,6 +68,10 @@ export interface PlayerHandlers {
   // A grade was chosen. Queue maintenance (advancing, burying siblings) is the
   // player's job; the caller only records the review.
   onGrade?(grade: ReviewGrade, id: string): void;
+  // The current card should stop being a card. The mark itself stays; the
+  // caller clears `card` and its schedule row. Queue maintenance is the
+  // player's job, exactly as with a grade.
+  onRemoveCard?(id: string): void;
   // A note was written during play. The caller resolves the item id to a note
   // target (a mark, its reveal group, or a box) and persists it. An empty body
   // removes the note, matching the note editor's clear-to-remove.
@@ -259,13 +266,14 @@ export class Player {
     // a hit test rather than a per-mark element.
     canvas.addEventListener("click", (e) => this.contextClick(e));
     canvas.addEventListener("pointermove", (e) => this.contextHover(e));
-    // The note strip sits under the crop, mirroring the cue above it, so the
-    // answer and the note written about it are read in one place.
+    // The note strip is its own row between the stage and the nav row, not part
+    // of the scrolling stage: its reserved height is what keeps the crop still
+    // when the answer is revealed.
     const note = document.createElement("div");
     note.className = "player-note";
     note.id = "player-note";
     note.hidden = true;
-    stage.append(cue, canvas, note);
+    stage.append(cue, canvas);
 
     const foot = document.createElement("div");
     foot.className = "player-foot";
@@ -310,17 +318,65 @@ export class Player {
     next.setAttribute("aria-label", "next");
     next.addEventListener("click", () => this.step(1));
 
-    foot.append(prev, up, reveal, down, next);
+    // Un-card the item on screen. It sits after next, separated from it, because
+    // removing also advances the sitting but must never be hit by a stray tap on
+    // the most-used control. Hidden unless the item is a card (see syncUncard).
+    const uncard = document.createElement("button");
+    uncard.className = "tb-btn player-uncard";
+    uncard.id = "player-uncard";
+    uncard.hidden = true;
+    uncard.appendChild(icon("card-minus", 15));
+    uncard.title = "remove card — keeps the mark";
+    uncard.setAttribute("aria-label", "remove card");
+    uncard.addEventListener("click", () => this.removeCurrent());
 
-    // Grade buttons live under the nav row and only appear once the answer is
-    // shown, so a question is never graded sight-unseen.
+    foot.append(prev, up, reveal, down, next, uncard);
+
+    // Grade buttons live under the nav row. They are built before the reveal and
+    // hidden (see syncGrades), so the row's height never appears mid-session; a
+    // question is still never graded sight-unseen because the hidden controls
+    // are unfocusable and unreachable.
     const grades = document.createElement("div");
     grades.className = "player-grades";
     grades.id = "player-grades";
 
-    box.append(head, stage, foot, grades);
+    box.append(head, stage, note, foot, grades);
     this.root.append(backdrop, box);
     this.syncShuffleButton();
+  }
+
+  // The un-card control is per-item, so it is synced on every paint rather than
+  // built once: question play and an uncarded Alt+click modal show nothing.
+  private syncUncard(): void {
+    const button = this.root.querySelector<HTMLElement>("#player-uncard");
+    if (!button) return;
+    const item = this.current();
+    button.hidden = !item || !(this.source.isCard?.(item.id) ?? false);
+  }
+
+  // Removes the current card without grading it: the mark stays, only `card`
+  // and its schedule row go. The sitting advances exactly like a graded card.
+  private removeCurrent(): void {
+    const item = this.current();
+    if (!item) return;
+    if (!(this.source.isCard?.(item.id) ?? false)) return;
+    this.handlers.onRemoveCard?.(item.id);
+
+    const remaining = this.items.filter((card) => card.id !== item.id);
+    const at = Math.min(this.index, remaining.length);
+    this.items = remaining;
+    this.promote(at);
+
+    if (this.items.length === 0) {
+      this.close();
+      return;
+    }
+    this.index = Math.min(this.index, this.items.length - 1);
+    this.revealed = false;
+    this.editingNote = false;
+    this.noteExpanded = false;
+    this.resetContext();
+    void this.paint();
   }
 
   private grade(g: ReviewGrade): void {
@@ -494,7 +550,12 @@ export class Player {
 
   private toggleReveal(): void {
     this.revealed = !this.revealed;
+    // The scroll offset is part of "same place": a tall crop must not jump
+    // because a repaint reset the stage's scroll.
+    const stage = this.root.querySelector<HTMLElement>(".player-stage");
+    const scroll = stage?.scrollTop ?? 0;
     this.paintOverlayOnly();
+    if (stage) stage.scrollTop = scroll;
   }
 
   // Grows the crop on one side by one step, clamped by the card's frame (when it
@@ -598,20 +659,24 @@ export class Player {
     this.drawMarks();
   }
 
-  // Builds the grade row for the current card, or clears it when there is
-  // nothing to grade. Rebuilt each paint so previews always reflect the card
-  // under the cursor and the workload the caller built the session with.
+  // Builds the grade row for the current card. Rebuilt each paint so previews
+  // always reflect the card under the cursor and the workload the caller built
+  // the session with.
+  //
+  // The row is built even while the answer is covered and merely made invisible:
+  // adding it on reveal would shrink the stage, and because the stage centers
+  // its content, the crop would jump. Grading sight-unseen stays impossible
+  // because `visibility: hidden` also removes the buttons from focus.
   private syncGrades(): void {
     const host = this.root.querySelector<HTMLElement>("#player-grades");
     if (!host) return;
     host.innerHTML = "";
 
     const item = this.current();
-    // Grades appear only after reveal: grading a card you have not seen is a
-    // guess, and the preview numbers would be meaningless.
-    if (!item || !this.revealed) return;
-
-    const previews = this.source.preview?.(item.id) ?? null;
+    const previews = item ? this.source.preview?.(item.id) ?? null : null;
+    host.hidden = !previews;
+    host.classList.toggle("revealed", this.revealed);
+    host.setAttribute("aria-hidden", String(!this.revealed));
     if (!previews) return;
 
     for (const { grade, label } of GRADES) {
@@ -641,12 +706,17 @@ export class Player {
     if (this.editingNote) return;
 
     const item = this.current();
-    const note = item && this.revealed ? this.source.note?.(item.id) : null;
+    // Read the note before the reveal too: the strip's height is part of the
+    // layout from the start, so showing the answer cannot move the crop. Only
+    // the contents wait for the reveal — a note usually restates the answer.
+    const note = item ? this.source.note?.(item.id) : null;
     const body = note?.body.trim() ?? "";
     host.innerHTML = "";
-    host.hidden = !item || !this.revealed;
+    host.hidden = !item;
+    host.classList.remove("editing");
+    host.classList.toggle("has-note", !!body || !!note?.drawing);
     host.classList.toggle("expanded", this.noteExpanded);
-    if (!item || host.hidden) return;
+    if (!item || !this.revealed) return;
 
     if (body) {
       // The same note twice: rendered markdown for the expanded strip, and a
@@ -711,6 +781,7 @@ export class Player {
     const initial = this.source.note?.(item.id)?.body ?? "";
     this.editingNote = true;
     host.hidden = false;
+    host.classList.add("editing");
     host.innerHTML = "";
 
     const input = document.createElement("textarea");
@@ -805,6 +876,7 @@ export class Player {
     // Update the controls now; marks are drawn after the fresh crop lands so we
     // never paint the new question's marks over the previous question's image.
     this.syncRevealButton();
+    this.syncUncard();
     this.syncGrades();
     this.syncNote();
     if (!item) {

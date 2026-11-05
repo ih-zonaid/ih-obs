@@ -509,6 +509,10 @@ export class App {
         marksFor: (id) => this.marksForPlayerItem(id),
         contextMarks: (id, crop) => this.contextMarksForCard(id, crop),
         preview: (id) => this.cardPreviews(id),
+        isCard: (id) => {
+          const mark = this.markById(id);
+          return !!mark && isCard(mark);
+        },
         siblingIds: (id) => this.siblingCardIds(id),
         reorder: (ids, random) => this.reorderCards(ids, random),
         path: () => this.currentPath ?? "",
@@ -518,6 +522,7 @@ export class App {
       {
         onClose: () => undefined,
         onGrade: (grade, id) => void this.gradeCard(grade, id),
+        onRemoveCard: (id) => this.removeCardFromPlayer(id),
         onSaveNote: (id, body) => this.saveNoteForPlayerItem(id, body)
       }
     );
@@ -2120,6 +2125,12 @@ export class App {
     if (!mark || isInk(mark)) return;
     const holder = groupMembers(this.marks(), mark).find(isCard) ?? mark;
     this.playCards([holder], { allowUncarded: true, revealed: true });
+  }
+
+  // The modal's un-card control: the mark stays on the page, only `card` and its
+  // schedule row go, so it drops out of every deck and sitting.
+  private removeCardFromPlayer(id: string): void {
+    this.setCard(id, null);
   }
 
   /**

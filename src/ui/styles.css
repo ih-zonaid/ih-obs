@@ -920,7 +920,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 16px;
   background: var(--bg);
 }
-.player-canvas { max-width: 100%; background: #fff; box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5); }
+.player-canvas { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5); }
 /* The mark's recall cue (question side), shown above the crop while unrevealed.
    Capped height so a long cue cannot push the crop out of view. */
 .player-cue {
@@ -936,17 +936,18 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 14px;
 }
 .player-cue[hidden] { display: none; }
-/* The note strip under the crop, shown only once the answer is revealed. A
-   fixed column rather than fit-content: unlike the cue it is a writing surface,
-   so it needs a stable width. Capped like the cue so a long note can never push
-   the crop out of the stage (the stage is flex:1 and would just shrink). */
+/* The note strip is its own row between the stage and the nav row. Its height
+   is reserved even while the answer is covered — that is what keeps the crop
+   from moving on reveal. The contents scroll inside it rather than growing it.
+   `has-note` reserves the reading height; without it the row is a single line
+   for the "add note" affordance, so a card with no note wastes little space. */
 .player-note {
+  flex: 0 0 auto;
+  height: 48px;
   width: 100%;
-  max-width: min(680px, 100%);
-  max-height: 30vh;
-  max-height: 30dvh;
   overflow: auto;
-  margin-top: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -954,6 +955,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-align: left;
   font-size: 13.5px;
 }
+.player-note.has-note { height: 112px; }
+/* The editor needs room for the textarea; growing here is user-initiated. */
+.player-note.editing { height: 168px; }
 .player-note[hidden] { display: none; }
 .player-note-body {
   padding: 8px 12px;
@@ -995,16 +999,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 .player-context:hover { color: var(--fg); }
 .player-reveal { min-width: 130px; }
 .player-reveal.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+/* Un-card sits after next with extra separation from it. */
+.player-uncard { min-width: 40px; margin-left: 8px; color: var(--fg-dim); }
+.player-uncard:hover { color: #f7768e; border-color: #f7768e; }
+.player-uncard[hidden] { display: none; }
 
-/* Grade row. Empty until the answer is revealed; the CSS grid simply collapses
-   to nothing when there are no children. */
+/* Grade row. The buttons are built before the reveal and only hidden, so the
+   row's height is identical before and after — adding it on reveal used to
+   shrink the stage and recenter the crop. `visibility` (unlike display) keeps
+   the row's space, and hidden buttons are not focusable. */
 .player-grades {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   padding: 0 12px 12px;
 }
-.player-grades:empty { display: none; }
+.player-grades[hidden] { display: none; }
+.player-grades:not(.revealed) { visibility: hidden; }
 .player-grade {
   display: flex;
   flex-direction: column;
@@ -1027,19 +1038,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 .player-grade.grade-good { border-left: 3px solid #22c55e; }
 .player-grade.grade-easy { border-left: 3px solid #7aa2f7; }
 
-/* Play mode on a touch device. The note strip starts as a single line and opens
-   on tap. This is a reading choice, not a layout repair: the crop is sized
-   intrinsically by the page raster (.player-canvas only downscales), so nothing
-   here was ever squeezing it, and the stage has slack to spare. What the
-   collapse buys is attention — on a 360x640 phone a four-line note rendered
-   176px tall, which made the reference material the largest thing on a screen
-   whose subject is the ~90px crop above it. The trigger is the primary pointer
+/* Play mode on a touch device. The note strip's row is already part of the
+   layout; here it stays one line so the crop keeps most of the height, and it
+   opens only on an explicit tap. Expanding is the one user-initiated growth —
+   a reveal never changes the row's height. The trigger is the primary pointer
    rather than the viewport, matching the touch-target rules below and
    device.ts: a desktop window narrowed to 600px still has a mouse. */
 @media (pointer: coarse) {
   .player-cue { max-height: 18vh; max-height: 18dvh; }
-  .player-note { max-height: 24vh; max-height: 24dvh; }
-  .player-note.expanded { max-height: 34vh; max-height: 34dvh; }
+  .player-foot { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .player-note.has-note { height: 52px; }
+  .player-note.has-note.expanded { height: 34vh; height: 34dvh; }
+  .player-note.editing { height: 34vh; height: 34dvh; }
   /* Collapsed: one row — the preview and the button side by side. */
   .player-note:not(.expanded) {
     flex-direction: row;
@@ -1067,6 +1077,14 @@ body.resizing { cursor: col-resize; user-select: none; }
      .player-note-edit here loses to it on source order and the padding never
      lands. */
   .player-note .player-note-edit { padding: 10px 12px; font-size: 12px; }
+}
+
+/* Small screens: the modal already spans the width, so its outer padding is
+   dead space that only shrinks the crop. The height follows the visual
+   viewport; the fixed rows above/below the stage keep the bottom reachable. */
+@media (max-width: 600px) {
+  .player-root { padding: 8px; }
+  .player { width: 100%; height: min(760px, calc(100dvh - 16px)); }
 }
 
 .outline {

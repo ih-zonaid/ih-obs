@@ -99,6 +99,9 @@ A mark **is** a flashcard iff `mark.card` is set. No automatic promotion.
   creates `mark.card` and the review row, so the rating is the commitment.
   Closing without grading leaves the mark untouched (it is not a card).
   Deletion is the mark menu's **Remove**; Alt+click no longer means delete.
+  In the player's nav row, **un-card** (`card-minus`, after next, shown only when
+  the item is a card) clears `mark.card` and the schedule row while keeping the
+  mark, then advances the sitting — the card drops out of every deck.
 - Play scope is **within a frame** — cards whose *mark span* falls inside the
   selected frame's span (testing the derived crop would fail for the default
   full-width band; see `openPlayer` in `app.ts`).
@@ -289,23 +292,25 @@ Order is document position (page, then y).
   leaving the card on screen in place.
 - **Decks**: each outline row is a playable deck with a due/new badge; see §3c.
 - **Reveal controls**: toggle reveal, hide all, per-mark click toggle.
-- **Notes in play** (schema unchanged): a note strip under the crop, shown only
-  once the answer is revealed — a note usually restates the answer, so it is
-  gated exactly like the grade row. It renders the note as markdown and offers
-  `add note` / `note` (or `n`), which swaps the strip for an inline textarea:
-  ⌘/Ctrl+Enter or blur commits, Esc cancels, an empty body removes the note.
-  Under `@media (pointer: coarse)` the strip starts as one clamped line of plain
-  text and opens on tap (`noteExpanded` + the `expanded` class; the media query
-  decides the layout, JS only supplies the toggle). This is a reading choice,
-  not a layout repair — the crop is sized intrinsically by the page raster
-  (`.player-canvas` only downscales), so nothing squeezes it; the collapse keeps
-  the reference material from out-weighing the ~40px band it annotates.
+- **Reveal does not relayout.** The player is a fixed flex column (head, stage,
+  note row, nav row, grade row). The grade buttons are built when the item
+  changes and only made `visibility: hidden` until reveal, and the note row's
+  height is reserved before reveal — so showing the answer changes pixels, never
+  the crop's position. The stage keeps its scroll offset across a reveal.
+- **Notes in play** (schema unchanged): the note strip is its own fixed-height
+  row between the stage and the nav row, not part of the scrolling stage. Only
+  its *contents* are reveal-gated — a note usually restates the answer. It
+  renders the note as markdown and offers `add note` / `note` (or `n`), which
+  swaps the strip for an inline textarea: ⌘/Ctrl+Enter or blur commits, Esc
+  cancels, an empty body removes the note. The row reserves the reading height
+  when a note exists (`has-note`), a single line otherwise, and grows only for
+  user actions (editing, or tapping it open under `@media (pointer: coarse)`).
   The item id is resolved through `playerNoteAnchor`, so a note written in play
   lands on the same target the overlay's note editor would use (a grouped mark
   writes to its reveal group) and appears in the notes panel and outline dot.
-  Because the note strip is reveal-gated, the player's window key handler must
-  ignore keys from a text field — otherwise the space in a note would hide the
-  answer and take the strip down with it.
+  Because the note contents are reveal-gated, the player's window key handler
+  must ignore keys from a text field — otherwise the space in a note would hide
+  the answer and take the strip down with it.
 
 ### Debugging / authoring aids
 - **Inspect mode**: paints each mark's resolved owner as a badge, and shows a
