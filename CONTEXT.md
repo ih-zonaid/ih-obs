@@ -95,9 +95,11 @@ A mark **is** a flashcard iff `mark.card` is set. No automatic promotion.
 - Authoring: right-click a mark → **Make card**, then optionally **Use selected
   box as context** / **Frame with …**. Right-click a `frame` box → **Play cards
   in frame**. Cards can also be assigned context/frame from the mark menu.
-  **Alt+click** a mark opens it in the player as a single card: grading there
-  creates `mark.card` and the review row, so the rating is the commitment.
-  Closing without grading leaves the mark untouched (it is not a card).
+  **Alt+click** a mark reveals it in place and opens a small rating popover
+  anchored above it (flipping below when there is no room). Rating there creates
+  `mark.card` and the review row, so the rating is the commitment; dismissing
+  the popover leaves the mark untouched (it is not a card). The popover uses the
+  same `cardPreviews` / `gradeCard` path as the player, and digits 1–4 grade.
   Deletion is the mark menu's **Remove**; Alt+click no longer means delete.
   In the player's nav row, **un-card** (`card-minus`, after next, shown only when
   the item is a card) clears `mark.card` and the schedule row while keeping the

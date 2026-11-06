@@ -98,6 +98,7 @@ import { Explorer } from "../ui/explorer";
 import { Home } from "../ui/home";
 import { icon } from "../ui/icons";
 import { Outline, looseDeckId, looseNodeId } from "../ui/outline";
+import { openRatingPopover } from "../ui/ratingPopover";
 import { NotesPanel, type NoteRow } from "../ui/notesPanel";
 import { hideNotePreview, openNoteEditor, showNotePreview } from "../ui/notePopover";
 import { Palette } from "../ui/palette";
@@ -1334,7 +1335,7 @@ export class App {
     const overlay = new Overlay(view.surfaces, marks, {
       onChange: () => void this.persist(),
       onContext: (id, x, y) => this.openMarkMenu(id, x, y),
-      onCardOpen: (id) => this.openCardModal(id),
+      onCardOpen: (id, rect) => this.openInlineRating(id, rect),
       onPendingContext: (x, y) => this.openPendingLineMenu(x, y),
       onLineContext: (x, y) => this.openLineSettings(x, y),
       ownerFor: (geom) => this.resolveOwner(geom),
@@ -2074,18 +2075,13 @@ export class App {
   }
 
   // Plays an explicit list of card marks, cropping each by its derived card
-  // crop. Order is document position (page, then y). `allowUncarded` lets the
-  // Alt+click modal open a mark that is not a card yet — grading it there is
-  // what makes it one; `revealed` opens straight onto the grade row.
-  private playCards(
-    marks: Mark[],
-    opts: { allowUncarded?: boolean; revealed?: boolean } = {}
-  ): void {
+  // crop. Order is document position (page, then y).
+  private playCards(marks: Mark[]): void {
     if (!this.view?.getPageImages) {
       window.alert("Play mode supports PDFs.");
       return;
     }
-    const cards = opts.allowUncarded ? marks : marks.filter(isCard);
+    const cards = marks.filter(isCard);
     if (!cards.length) {
       window.alert("No cards in this scope. Make a mark a card first.");
       return;
@@ -2113,18 +2109,25 @@ export class App {
         cue: m.cue
       };
     });
-    this.player.start(this.reviewOrder(items), opts.revealed ?? false);
+    this.player.start(this.reviewOrder(items));
   }
 
-  // Alt+click: open one mark in the player without turning it into a card.
-  // Grading there commits the card; closing without a grade changes nothing.
-  // A grouped mark opens the group's existing card when it has one, so the
-  // sitting never asks the same answer under a different member.
-  private openCardModal(id: string): void {
+  // Alt+click: reveal the mark in place and offer its ratings as a small
+  // popover. Grading there creates the card (see gradeCard); dismissing leaves
+  // the mark untouched. A grouped mark uses the group's existing card, so the
+  // same answer is never authored twice.
+  private openInlineRating(id: string, rect: DOMRect): void {
     const mark = this.markById(id);
     if (!mark || isInk(mark)) return;
     const holder = groupMembers(this.marks(), mark).find(isCard) ?? mark;
-    this.playCards([holder], { allowUncarded: true, revealed: true });
+    this.overlay?.reveal(holder.id, true);
+    const previews = this.cardPreviews(holder.id);
+    if (!previews) return;
+    openRatingPopover({
+      anchor: { x: rect.left + rect.width / 2, top: rect.top, bottom: rect.bottom },
+      previews,
+      onGrade: (grade) => void this.gradeCard(grade, holder.id)
+    });
   }
 
   // The modal's un-card control: the mark stays on the page, only `card` and its
@@ -2220,9 +2223,9 @@ export class App {
     if (!this.reviewStore || !this.currentPath) return;
     const mark = this.markById(id);
     if (!mark) return;
-    // Grading an uncarded mark is the Alt+click modal's authoring path: the
-    // rating is the commitment, so the card is created only now. Closing the
-    // modal without a grade leaves the mark untouched.
+    // Grading an uncarded mark is the inline rating path: the rating is the
+    // commitment, so the card is created only now. Dismissing the popover
+    // leaves the mark untouched.
     if (!isCard(mark)) this.setCard(id, {});
     const now = Date.now();
     const row = await this.reviewStore.grade({

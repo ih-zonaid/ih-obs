@@ -35,10 +35,11 @@ export interface NotePin {
 export interface OverlayOptions {
   onChange(marks: Mark[]): void;
   onContext?(id: string, x: number, y: number): void;
-  // Alt+click on an occlusion/highlight: open it in the card modal. A plain
-  // click still reveals. Deleting is the context menu's job; the modifier used
-  // to mean "remove", which made an authoring gesture destructive.
-  onCardOpen?(id: string): void;
+  // Alt+click on an occlusion/highlight: reveal it and open the inline rating
+  // card at this position. A plain click still reveals. Deleting is the context
+  // menu's job; the modifier used to mean "remove", which made an authoring
+  // gesture destructive.
+  onCardOpen?(id: string, rect: DOMRect): void;
   // Right-click on an uncommitted line draft. The draft is not a mark until
   // the caller picks a kind via commitPending(); choosing any other tool
   // discards it.
@@ -934,7 +935,7 @@ export class Overlay {
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
         if (e.altKey) {
-          this.options.onCardOpen?.(r.id);
+          this.options.onCardOpen?.(r.id, el.getBoundingClientRect());
         } else {
           this.reveal(r.id, !r.revealed);
         }
